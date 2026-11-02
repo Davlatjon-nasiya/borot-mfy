@@ -119,8 +119,8 @@ async def admin_actions(call:CallbackQuery,state:FSMContext):
   if not rows: await call.message.answer('Hozircha material yo‘q.')
   for r in rows:
    toggle='hide' if r['active'] else 'show'
-   kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='✏️ Tahrirlash',callback_data=f\"adm:edit:{r['id']}\"),InlineKeyboardButton(text=('🙈 Yashirish' if r['active'] else '👁 Ko‘rsatish'),callback_data=f\"adm:{toggle}:{r['id']}\"),InlineKeyboardButton(text='🗑 O‘chirish',callback_data=f\"adm:delete:{r['id']}\")]])
-   await call.message.answer(f\"#{r['id']} {'🟢 Faol' if r['active'] else '⚪ Yashirilgan'}\\n{html.escape(r['title'])} · {r['created_at']:%d.%m.%Y}\",reply_markup=kb)
+   kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='✏️ Tahrirlash',callback_data=f"adm:edit:{r['id']}"),InlineKeyboardButton(text=('🙈 Yashirish' if r['active'] else '👁 Ko‘rsatish'),callback_data=f"adm:{toggle}:{r['id']}"),InlineKeyboardButton(text='🗑 O‘chirish',callback_data=f"adm:delete:{r['id']}")]])
+   await call.message.answer(f"#{r['id']} {'🟢 Faol' if r['active'] else '⚪ Yashirilgan'}\n{html.escape(r['title'])} · {r['created_at']:%d.%m.%Y}",reply_markup=kb)
  elif action=='add_ad': await state.set_state(AdminFlow.ad_title); await call.message.answer('Reklama sarlavhasini yuboring:')
  elif action=='add_post': await state.set_state(AdminFlow.post_title); await call.message.answer('Tadbir yoki bajarilgan ish sarlavhasini yuboring:')
  elif action.startswith('hide:') or action.startswith('show:'):
@@ -131,7 +131,7 @@ async def admin_actions(call:CallbackQuery,state:FSMContext):
   pid=int(action.split(':')[1]); row=await pool.fetchrow('SELECT * FROM content_posts WHERE id=$1',pid)
   if not row: await call.answer('Material topilmadi',show_alert=True); return
   await state.update_data(edit_id=pid,edit_kind=row['kind']); await state.set_state(AdminFlow.edit_title)
-  await call.message.answer(f\"✏️ Hozirgi sarlavha: {html.escape(row['title'])}\\nYangi sarlavhani yuboring:\")
+  await call.message.answer(f"✏️ Hozirgi sarlavha: {html.escape(row['title'])}\nYangi sarlavhani yuboring:")
  await call.answer()
 
 @router.message(AdminFlow.mfy_name,F.text)
