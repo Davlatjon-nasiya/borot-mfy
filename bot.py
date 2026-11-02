@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
-                           KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, WebAppInfo)
+                           KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, WebAppInfo, MenuButtonWebApp)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
 
@@ -30,8 +30,6 @@ CATEGORIES={
 STATUS={'new':'🆕 Yangi','seen':"👀 Ko‘rildi",'done':'✅ Hal qilindi'}
 router=Router()
 
-class Form(StatesGroup):
- text=State(); phone=State(); address=State(); confirm=State()
 class AdminFlow(StatesGroup):
  mfy_name=State(); mfy_address=State(); mfy_phone=State()
  staff_photo=State(); staff_title=State(); staff_description=State()
@@ -59,10 +57,6 @@ def can_view(uid,cat): return is_admin(uid) or CATEGORIES.get(cat,('',0))[1]==ui
 
 def home_kb():
  return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text='📱 Ilovani ochish',web_app=WebAppInfo(url=WEBAPP_URL))]],resize_keyboard=True,is_persistent=True,input_field_placeholder='Ilovani ochish uchun tugmani bosing')
-def cats_kb():
- kb=InlineKeyboardBuilder()
- for k,(title,_) in CATEGORIES.items(): kb.button(text=title,callback_data=f'cat:{k}')
- kb.adjust(2); return kb.as_markup()
 def status_kb(aid):
  kb=InlineKeyboardBuilder(); kb.button(text='👀 Ko‘rildi',callback_data=f'st:{aid}:seen'); kb.button(text='✅ Hal qilindi',callback_data=f'st:{aid}:done'); kb.adjust(2); return kb.as_markup()
 def admin_kb():
@@ -77,59 +71,13 @@ async def setting(key,default=''):
  return await pool.fetchval('SELECT value FROM app_settings WHERE key=$1',key) or default
 async def set_setting(key,value):
  await pool.execute('INSERT INTO app_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value',key,value)
-async def save_application(user,data,bot):
- row=await pool.fetchrow('''INSERT INTO arizalar(user_id,full_name,username,category,text,phone,address) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *''',user.id,user.full_name,user.username,data['category'],data['text'],data['phone'],data['address'])
- aid=row['id']; title=CATEGORIES[data['category']][0]
- safe=f"📩 <b>Yangi murojaat №{aid}</b>\n📂 Yo‘nalish: {title}\n📝 Mazmuni: {html.escape(data['text'])}\n🕒 {row['created_at'].astimezone(TZ):%d.%m.%Y %H:%M}"
- private=safe+f"\n\n👤 Fuqaro: {html.escape(user.full_name)}\n📞 Telefon: {html.escape(data['phone'])}\n📍 Manzil: {html.escape(data['address'])}"
- dm=group=None; specialist=CATEGORIES[data['category']][1]
- if specialist:
-  try: dm=(await bot.send_message(specialist,private,reply_markup=status_kb(aid))).message_id
-  except Exception: logging.exception('Xodimga shaxsiy xabar yuborilmadi')
- if GROUP_ID:
-  try: group=(await bot.send_message(GROUP_ID,safe)).message_id
-  except Exception: logging.exception('Umumiy guruhga xabar yuborilmadi')
- await pool.execute('UPDATE arizalar SET dm_msg_id=$1,group_msg_id=$2 WHERE id=$3',dm,group,aid)
- return aid
-
 @router.message(CommandStart())
 async def start(m:Message,state:FSMContext):
  await state.clear(); name=await setting('mfy_name','Mahalla')
+ try:
+  await m.bot.set_chat_menu_button(chat_id=m.chat.id,menu_button=MenuButtonWebApp(text='Ilovani ochish',web_app=WebAppInfo(url=WEBAPP_URL)))
+ except Exception: logging.exception('Telegram ilova menyu tugmasini sozlashda xato')
  await m.answer(f"Assalomu alaykum! 👋\n\n<b>{html.escape(name)}</b> murojaatlar platformasiga xush kelibsiz. Ariza yuborish uchun pastdagi 📱 Ilovani ochish tugmasini bosing.",reply_markup=home_kb())
-@router.callback_query(F.data=='fallback_apply')
-async def fallback(call:CallbackQuery): await call.message.answer('Kimga murojaat qilmoqchisiz?',reply_markup=cats_kb()); await call.answer()
-@router.callback_query(F.data.startswith('cat:'))
-async def choose(call:CallbackQuery,state:FSMContext):
- key=call.data.split(':',1)[1]
- if key not in CATEGORIES: await call.answer('Noto‘g‘ri tanlov',show_alert=True); return
- await state.update_data(category=key); await state.set_state(Form.text)
- await call.message.edit_text(f"Tanlandi: <b>{CATEGORIES[key][0]}</b>\n\nMurojaatingiz mazmunini batafsil yozing:"); await call.answer()
-@router.message(Form.text,F.text)
-async def get_text(m:Message,state:FSMContext):
- if len(m.text.strip())<10: await m.answer('Murojaatni kamida 10 ta belgi bilan batafsilroq yozing.'); return
- await state.update_data(text=m.text.strip()); await state.set_state(Form.phone)
- await m.answer('Telefon raqamingizni yuboring:',reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text='📱 Raqamni yuborish',request_contact=True)]],resize_keyboard=True,one_time_keyboard=True))
-async def ask_address(m,state): await state.set_state(Form.address); await m.answer('Uy manzilingizni yozing (mahalla, ko‘cha, uy raqami):',reply_markup=ReplyKeyboardRemove())
-@router.message(Form.phone,F.contact)
-async def phone_contact(m:Message,state:FSMContext): await state.update_data(phone=m.contact.phone_number); await ask_address(m,state)
-@router.message(Form.phone,F.text)
-async def phone_text(m:Message,state:FSMContext):
- if len(''.join(c for c in m.text if c.isdigit()))<9: await m.answer('Telefon raqam noto‘g‘ri. Masalan: +998901234567'); return
- await state.update_data(phone=m.text.strip()); await ask_address(m,state)
-@router.message(Form.address,F.text)
-async def address(m:Message,state:FSMContext):
- await state.update_data(address=m.text.strip()); d=await state.get_data(); await state.set_state(Form.confirm)
- kb=InlineKeyboardBuilder(); kb.button(text='✅ Yuborish',callback_data='send'); kb.button(text='❌ Bekor qilish',callback_data='cancel'); kb.adjust(2)
- await m.answer(f"<b>Ma’lumotlarni tekshiring</b>\n\nKimga: {CATEGORIES[d['category']][0]}\nTelefon: {html.escape(d['phone'])}\nManzil: {html.escape(d['address'])}\nMurojaat: {html.escape(d['text'])}",reply_markup=kb.as_markup())
-@router.callback_query(Form.confirm,F.data=='cancel')
-async def cancel(call:CallbackQuery,state:FSMContext): await state.clear(); await call.message.edit_text('Bekor qilindi. Qayta boshlash uchun /start bosing.'); await call.answer()
-@router.callback_query(Form.confirm,F.data=='send')
-async def send(call:CallbackQuery,state:FSMContext,bot:Bot):
- d=await state.get_data()
- try: aid=await save_application(call.from_user,d,bot)
- except Exception: logging.exception('Ariza saqlashda xato'); await call.answer('Ariza yuborilmadi. Keyinroq urinib ko‘ring.',show_alert=True); return
- await state.clear(); await call.message.edit_text(f'✅ Murojaatingiz qabul qilindi. Ariza raqami: <b>№{aid}</b>'); await call.answer()
-
 @router.message(Command('admin'))
 async def admin(m:Message):
  if not (is_admin(m.from_user.id) or is_staff(m.from_user.id)): await m.answer('Sizda admin panelga ruxsat yo‘q.'); return
@@ -177,6 +125,8 @@ async def admin_actions(call:CallbackQuery,state:FSMContext):
  elif action=='add_post': await state.set_state(AdminFlow.post_title); await call.message.answer('Tadbir yoki bajarilgan ish sarlavhasini yuboring:')
  elif action.startswith('hide:') or action.startswith('show:'):
   mode,pid=action.split(':'); await pool.execute('UPDATE content_posts SET active=$1 WHERE id=$2',mode=='show',int(pid)); await call.message.answer('✅ Material holati yangilandi.')
+ elif action.startswith('delete:'):
+  pid=int(action.split(':')[1]); await pool.execute('DELETE FROM content_posts WHERE id=$1',pid); await call.message.answer('🗑 Material o‘chirildi.')
  elif action.startswith('edit:'):
   pid=int(action.split(':')[1]); row=await pool.fetchrow('SELECT * FROM content_posts WHERE id=$1',pid)
   if not row: await call.answer('Material topilmadi',show_alert=True); return
