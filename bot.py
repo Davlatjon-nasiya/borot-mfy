@@ -34,9 +34,10 @@ class Form(StatesGroup):
  text=State(); phone=State(); address=State(); confirm=State()
 class AdminFlow(StatesGroup):
  mfy_name=State(); mfy_address=State(); mfy_phone=State()
- staff_photo=State(); staff_title=State()
+ staff_photo=State(); staff_title=State(); staff_description=State()
  ad_title=State(); ad_body=State(); ad_photo=State()
  post_title=State(); post_body=State(); post_photo=State()
+ edit_title=State(); edit_body=State(); edit_photo=State()
 
 async def init_db():
  global pool
@@ -57,10 +58,7 @@ def is_staff(uid): return any(v[1]==uid and uid!=0 for v in CATEGORIES.values())
 def can_view(uid,cat): return is_admin(uid) or CATEGORIES.get(cat,('',0))[1]==uid
 
 def home_kb():
- rows=[]
- if WEBAPP_URL: rows.append([InlineKeyboardButton(text='📱 Ilovani ochish',web_app=WebAppInfo(url=WEBAPP_URL))])
- rows.append([InlineKeyboardButton(text='📝 Bot orqali ariza yuborish',callback_data='fallback_apply')])
- return InlineKeyboardMarkup(inline_keyboard=rows)
+ return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text='📱 Ilovani ochish',web_app=WebAppInfo(url=WEBAPP_URL))]],resize_keyboard=True,is_persistent=True,input_field_placeholder='Ilovani ochish uchun tugmani bosing')
 def cats_kb():
  kb=InlineKeyboardBuilder()
  for k,(title,_) in CATEGORIES.items(): kb.button(text=title,callback_data=f'cat:{k}')
@@ -97,7 +95,7 @@ async def save_application(user,data,bot):
 @router.message(CommandStart())
 async def start(m:Message,state:FSMContext):
  await state.clear(); name=await setting('mfy_name','Mahalla')
- await m.answer(f"Assalomu alaykum! 👋\n\n<b>{html.escape(name)}</b> murojaatlar platformasiga xush kelibsiz. Kerakli mas’ulni tanlang va murojaatingizni yuboring.",reply_markup=home_kb())
+ await m.answer(f"Assalomu alaykum! 👋\n\n<b>{html.escape(name)}</b> murojaatlar platformasiga xush kelibsiz. Ariza yuborish uchun pastdagi 📱 Ilovani ochish tugmasini bosing.",reply_markup=home_kb())
 @router.callback_query(F.data=='fallback_apply')
 async def fallback(call:CallbackQuery): await call.message.answer('Kimga murojaat qilmoqchisiz?',reply_markup=cats_kb()); await call.answer()
 @router.callback_query(F.data.startswith('cat:'))
@@ -167,17 +165,23 @@ async def admin_actions(call:CallbackQuery,state:FSMContext):
   key=action.split(':')[1]
   if key not in CATEGORIES: await call.answer('Xodim topilmadi',show_alert=True); return
   await state.update_data(staff_key=key); await state.set_state(AdminFlow.staff_photo)
-  await call.message.answer(f"{CATEGORIES[key][0]} uchun yangi rasm yuboring. Rasmni yuborgach ismini ham yangilash mumkin bo‘ladi.")
+  await call.message.answer(f"{CATEGORIES[key][0]} uchun rasm yuboring. Rasmni o‘zgartirmaslik uchun /skip bosing.")
  elif action=='ads' or action=='posts':
-  kind='ad' if action=='ads' else 'post'; rows=await pool.fetch('SELECT id,title,active,created_at FROM content_posts WHERE kind=$1 ORDER BY id DESC LIMIT 10',kind)
+  kind='ad' if action=='ads' else 'post'; rows=await pool.fetch('SELECT id,title,active,created_at FROM content_posts WHERE kind=$1 ORDER BY id DESC LIMIT 20',kind)
   if not rows: await call.message.answer('Hozircha material yo‘q.')
   for r in rows:
-   kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🗑 O‘chirish/yashirish',callback_data=f"adm:hide:{r['id']}")]])
-   await call.message.answer(f"#{r['id']} {'🟢' if r['active'] else '⚪'} {html.escape(r['title'])} · {r['created_at']:%d.%m.%Y}",reply_markup=kb)
+   toggle='hide' if r['active'] else 'show'
+   kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='✏️ Tahrirlash',callback_data=f\"adm:edit:{r['id']}\"),InlineKeyboardButton(text=('🙈 Yashirish' if r['active'] else '👁 Ko‘rsatish'),callback_data=f\"adm:{toggle}:{r['id']}\")]])
+   await call.message.answer(f\"#{r['id']} {'🟢 Faol' if r['active'] else '⚪ Yashirilgan'}\\n{html.escape(r['title'])} · {r['created_at']:%d.%m.%Y}\",reply_markup=kb)
  elif action=='add_ad': await state.set_state(AdminFlow.ad_title); await call.message.answer('Reklama sarlavhasini yuboring:')
  elif action=='add_post': await state.set_state(AdminFlow.post_title); await call.message.answer('Tadbir yoki bajarilgan ish sarlavhasini yuboring:')
- elif action.startswith('hide:'):
-  pid=int(action.split(':')[1]); await pool.execute('UPDATE content_posts SET active=FALSE WHERE id=$1',pid); await call.message.answer('Material yashirildi.')
+ elif action.startswith('hide:') or action.startswith('show:'):
+  mode,pid=action.split(':'); await pool.execute('UPDATE content_posts SET active=$1 WHERE id=$2',mode=='show',int(pid)); await call.message.answer('✅ Material holati yangilandi.')
+ elif action.startswith('edit:'):
+  pid=int(action.split(':')[1]); row=await pool.fetchrow('SELECT * FROM content_posts WHERE id=$1',pid)
+  if not row: await call.answer('Material topilmadi',show_alert=True); return
+  await state.update_data(edit_id=pid,edit_kind=row['kind']); await state.set_state(AdminFlow.edit_title)
+  await call.message.answer(f\"✏️ Hozirgi sarlavha: {html.escape(row['title'])}\\nYangi sarlavhani yuboring:\")
  await call.answer()
 
 @router.message(AdminFlow.mfy_name,F.text)
@@ -189,17 +193,24 @@ async def save_mfy_phone(m:Message,state:FSMContext): await set_setting('mfy_pho
 @router.message(AdminFlow.staff_photo,F.photo)
 async def staff_photo(m:Message,state:FSMContext,bot:Bot):
  d=await state.get_data(); key=d['staff_key']; f=await bot.get_file(m.photo[-1].file_id); buf=io.BytesIO(); await bot.download_file(f.file_path,destination=buf)
- title=CATEGORIES[key][0]
- await pool.execute('''INSERT INTO staff_profiles(category,title,photo) VALUES($1,$2,$3) ON CONFLICT(category) DO UPDATE SET photo=EXCLUDED.photo,updated_at=NOW()''',key,title,buf.getvalue())
- await state.set_state(AdminFlow.staff_title); await m.answer('✅ Rasm saqlandi. Xodimning ilovada ko‘rinadigan ismini yuboring (yoki /skip):')
+ await pool.execute('''INSERT INTO staff_profiles(category,title,photo) VALUES($1,$2,$3) ON CONFLICT(category) DO UPDATE SET photo=EXCLUDED.photo,updated_at=NOW()''',key,CATEGORIES[key][0],buf.getvalue())
+ await state.set_state(AdminFlow.staff_title); await m.answer('✅ Rasm saqlandi. Xodimning ilovada ko‘rinadigan ismini yuboring:')
+@router.message(AdminFlow.staff_photo,Command('skip'))
+async def staff_photo_skip(m:Message,state:FSMContext):
+ await state.set_state(AdminFlow.staff_title); await m.answer('Xodimning ilovada ko‘rinadigan ismini yuboring:')
 @router.message(AdminFlow.staff_title,F.text)
 async def staff_title(m:Message,state:FSMContext):
- d=await state.get_data(); key=d['staff_key']; title=CATEGORIES[key][0]
- if m.text.strip()!='/skip': title=m.text.strip()[:120]
+ d=await state.get_data(); key=d['staff_key']; title=m.text.strip()[:120]
+ if title=='/skip': title=CATEGORIES[key][0]
  await pool.execute('''INSERT INTO staff_profiles(category,title) VALUES($1,$2) ON CONFLICT(category) DO UPDATE SET title=EXCLUDED.title,updated_at=NOW()''',key,title)
- await state.clear(); await m.answer('✅ Xodim ma’lumoti saqlandi.')
+ await state.set_state(AdminFlow.staff_description); await m.answer('Xodim vazifasi haqida qisqa izoh yozing (yoki /skip):')
+@router.message(AdminFlow.staff_description,F.text)
+async def staff_description(m:Message,state:FSMContext):
+ d=await state.get_data(); desc='' if m.text.strip()=='/skip' else m.text.strip()[:300]
+ await pool.execute('UPDATE staff_profiles SET description=$1,updated_at=NOW() WHERE category=$2',desc,d['staff_key'])
+ await state.clear(); await m.answer('✅ Xodim rasmi, ismi va izohi saqlandi. Ilovani yangilang.')
 @router.message(AdminFlow.staff_photo)
-async def staff_photo_hint(m:Message): await m.answer('Iltimos, xodim rasmini Telegram orqali foto ko‘rinishida yuboring.')
+async def staff_photo_hint(m:Message): await m.answer('Rasmni foto sifatida yuboring yoki /skip bosing.')
 
 @router.message(AdminFlow.ad_title,F.text)
 async def ad_title(m:Message,state:FSMContext): await state.update_data(title=m.text.strip()); await state.set_state(AdminFlow.ad_body); await m.answer('Reklama matnini yuboring:')
@@ -223,6 +234,22 @@ async def post_photo(m:Message,state:FSMContext,bot:Bot):
 @router.message(AdminFlow.post_photo,Command('skip'))
 async def post_skip(m:Message,state:FSMContext):
  d=await state.get_data(); await pool.execute("INSERT INTO content_posts(kind,title,body) VALUES('post',$1,$2)",d['title'],d['body']); await state.clear(); await m.answer('✅ Ma’lumot saqlandi.')
+
+@router.message(AdminFlow.edit_title,F.text)
+async def edit_content_title(m:Message,state:FSMContext):
+ await state.update_data(edit_title=m.text.strip()[:180]); await state.set_state(AdminFlow.edit_body); await m.answer('Yangi matnni yuboring:')
+@router.message(AdminFlow.edit_body,F.text)
+async def edit_content_body(m:Message,state:FSMContext):
+ await state.update_data(edit_body=m.text.strip()[:4000]); await state.set_state(AdminFlow.edit_photo); await m.answer('Yangi rasm yuboring yoki avvalgi rasmni saqlash uchun /skip bosing:')
+@router.message(AdminFlow.edit_photo,F.photo)
+async def edit_content_photo(m:Message,state:FSMContext,bot:Bot):
+ d=await state.get_data(); f=await bot.get_file(m.photo[-1].file_id); b=io.BytesIO(); await bot.download_file(f.file_path,destination=b)
+ await pool.execute('UPDATE content_posts SET title=$1,body=$2,image=$3 WHERE id=$4',d['edit_title'],d['edit_body'],b.getvalue(),d['edit_id'])
+ await state.clear(); await m.answer('✅ Material matni va rasmi yangilandi.')
+@router.message(AdminFlow.edit_photo,Command('skip'))
+async def edit_content_skip_photo(m:Message,state:FSMContext):
+ d=await state.get_data(); await pool.execute('UPDATE content_posts SET title=$1,body=$2 WHERE id=$3',d['edit_title'],d['edit_body'],d['edit_id'])
+ await state.clear(); await m.answer('✅ Material matni yangilandi, avvalgi rasm saqlandi.')
 
 @router.callback_query(F.data.startswith('st:'))
 async def set_status(call:CallbackQuery,bot:Bot):
