@@ -323,9 +323,9 @@ async def admin_application_comment(aid:int,payload:AdminComment,request:Request
 @app.patch('/api/admin/applications/{aid}')
 async def admin_app_status(aid:int,payload:dict,request:Request):
     admin_user(request); status=payload.get('status')
-    if status not in ('new','assigned','seen','in_progress','done'): raise HTTPException(400,'Holat noto‘g‘ri.')
+    if status not in ('new','assigned','contacted','seen','in_progress','done'): raise HTTPException(400,'Holat noto‘g‘ri.')
     row=await pool.fetchrow('UPDATE arizalar SET status=$1 WHERE id=$2 RETURNING user_id',status,aid)
     if not row: raise HTTPException(404,'Murojaat topilmadi.')
-    try: await bot.send_message(row['user_id'],{'new':f'🆕 №{aid} murojaatingiz yangi holatga qaytarildi.','assigned':f'👤 №{aid} murojaatingiz mas’ul xodimga biriktirildi.','seen':f'👀 №{aid} murojaatingiz ko‘rib chiqilmoqda.','in_progress':f'🛠 №{aid} murojaatingiz ustida ish boshlandi.','done':f'✅ №{aid} murojaatingiz topshirildi / hal qilindi.'}[status])
+    try: await bot.send_message(row['user_id'],{'new':f'🆕 №{aid} murojaatingiz yangi holatga qaytarildi.','assigned':f'👤 №{aid} murojaatingiz mas’ul xodimga biriktirildi.','contacted':f'📞 №{aid} murojaatingiz bo‘yicha mas’ul xodim siz bilan aloqaga chiqdi.','seen':f'👀 №{aid} murojaatingiz ko‘rib chiqilmoqda.','in_progress':f'🛠 №{aid} murojaatingiz ustida ish boshlandi.','done':f'✅ №{aid} murojaatingiz topshirildi / hal qilindi.'}[status])
     except Exception: logging.exception('Status xabari yuborilmadi')
     return {'ok':True}
