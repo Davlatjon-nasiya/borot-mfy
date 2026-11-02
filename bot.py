@@ -27,7 +27,7 @@ CATEGORIES={
  'ijtimoiy':('🤝 Ijtimoiy xodim',int(os.getenv('ID_IJTIMOIY','0'))),
  'soliq':('💼 Soliq inspektori',int(os.getenv('ID_SOLIQ','0'))),
 }
-STATUS={'new':'🆕 Yangi','seen':"👀 Ko‘rildi",'done':'✅ Hal qilindi'}
+STATUS={'new':'🆕 Yangi','assigned':'👤 Mas’ulga biriktirildi','seen':"👀 Ko‘rib chiqilmoqda",'in_progress':'🛠 Jarayonda','done':'✅ Hal qilindi'}
 router=Router()
 
 class AdminFlow(StatesGroup):
