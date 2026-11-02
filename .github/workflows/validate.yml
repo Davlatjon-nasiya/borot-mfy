@@ -1,0 +1,31 @@
+name: Validate application
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check Python syntax
+        run: python -m py_compile bot.py webapp.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Check Mini App JavaScript syntax
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          source = Path("static/index.html").read_text(encoding="utf-8")
+          scripts = re.findall(r"<script(?:\\s[^>]*)?>(.*?)</script>", source, re.S | re.I)
+          for index, script in enumerate(filter(str.strip, scripts)):
+              Path(f"/tmp/miniapp-{index}.js").write_text(script, encoding="utf-8")
+          print("Inline scripts extracted:", sum(bool(s.strip()) for s in scripts))
+          PY
+          for file in /tmp/miniapp-*.js; do node --check "$file"; done
