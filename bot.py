@@ -49,6 +49,7 @@ async def init_db():
   await c.execute('''CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY,value TEXT NOT NULL DEFAULT '')''')
   await c.execute('''CREATE TABLE IF NOT EXISTS staff_profiles (category TEXT PRIMARY KEY,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',photo BYTEA,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute('''CREATE TABLE IF NOT EXISTS content_posts (id SERIAL PRIMARY KEY,kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',image BYTEA,active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
+  await c.execute('''CREATE TABLE IF NOT EXISTS application_comments(id SERIAL PRIMARY KEY,application_id INTEGER NOT NULL REFERENCES arizalar(id) ON DELETE CASCADE,admin_id BIGINT NOT NULL,message TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute("INSERT INTO app_settings(key,value) VALUES('mfy_name','MAHALLA MUROJAAT') ON CONFLICT(key) DO NOTHING")
 
 def is_admin(uid): return uid in ADMIN_IDS
