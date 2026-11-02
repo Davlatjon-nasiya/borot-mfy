@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 BOT_TOKEN=os.getenv('BOT_TOKEN',''); DATABASE_URL=os.getenv('DATABASE_URL',''); GROUP_ID=int(os.getenv('GROUP_ID','0'))
-WEBAPP_URL=os.getenv('WEBAPP_URL','').rstrip('/')
+WEBAPP_URL=os.getenv('WEBAPP_URL','https://mahalla-murojaat-web.onrender.com').rstrip('/')
 ADMIN_IDS={int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().isdigit()}
 TZ=timezone(timedelta(hours=5)); pool=None
 CATEGORIES={
