@@ -4,7 +4,7 @@ from datetime import timezone,timedelta
 from contextlib import asynccontextmanager
 import asyncpg
 from aiogram import Bot
-from aiogram.types import BufferedInputFile
+from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from dotenv import load_dotenv
@@ -40,6 +40,12 @@ async def routing_id(key,env_default=0):
  except (TypeError,ValueError):return int(env_default)
 async def effective_staff_id(category):
  return await routing_id('staff_'+category,CATEGORIES.get(category,('',0))[1])
+def staff_application_keyboard(aid):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='📞 Aloqaga chiqildi',callback_data=f'st:{aid}:contacted')],
+        [InlineKeyboardButton(text='👀 Ko‘rildi',callback_data=f'st:{aid}:seen'),InlineKeyboardButton(text='🛠 Jarayonda',callback_data=f'st:{aid}:in_progress')],
+        [InlineKeyboardButton(text='✅ Hal qilindi',callback_data=f'st:{aid}:done')]
+    ])
 @asynccontextmanager
 async def lifespan(app):
  global pool,bot
@@ -137,10 +143,10 @@ async def submit(payload:Application,request:Request):
  private=safe+f"\n\n👤 Fuqaro: {html.escape((user.get('first_name','')+' '+user.get('last_name','')).strip())}\n📞 Telefon: {html.escape(payload.phone)}\n📍 Manzil: {html.escape(payload.address)}"
  dm=group=None; specialist=await effective_staff_id(payload.category); target_group=await routing_id('group_id',GROUP_ID)
  if specialist:
-  try: dm=(await bot.send_message(specialist,private)).message_id
+  try: dm=(await bot.send_message(specialist,private,reply_markup=staff_application_keyboard(aid))).message_id
   except Exception: logging.exception('Xodimga shaxsiy xabar yuborilmadi')
  if target_group:
-  try: group=(await bot.send_message(target_group,safe)).message_id
+  try: group=(await bot.send_message(target_group,safe,reply_markup=staff_application_keyboard(aid))).message_id
   except Exception: logging.exception('Guruhga xabar yuborilmadi')
  await pool.execute('UPDATE arizalar SET dm_msg_id=$1,group_msg_id=$2 WHERE id=$3',dm,group,aid)
  return {'ok':True,'application_id':aid,'message':f'Murojaatingiz qabul qilindi. Ariza №{aid}'}
