@@ -4,6 +4,7 @@ from datetime import timezone,timedelta
 from contextlib import asynccontextmanager
 import asyncpg
 from aiogram import Bot
+from aiogram.types import BufferedInputFile
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from dotenv import load_dotenv
@@ -83,7 +84,7 @@ async def send_database_backup(reason='manual'):
     sent=0
     for admin_id in admin_ids:
         try:
-            await bot.send_document(admin_id,io.BytesIO(data),filename=filename,caption=caption)
+            await bot.send_document(admin_id,BufferedInputFile(data,filename=filename),caption=caption)
             sent+=1
         except Exception:
             logging.exception('Backup admin %s ga yuborilmadi',admin_id)
