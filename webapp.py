@@ -102,16 +102,22 @@ async def public_data():
   p=bycat.get(key,{}); staff.append({'id':key,'title':p.get('title') or title,'description':p.get('description') or '', 'has_photo':bool(p.get('has_photo'))})
  posts=await pool.fetch('SELECT id,kind,title,body,(image IS NOT NULL) AS has_image,created_at FROM content_posts WHERE active=TRUE ORDER BY id DESC LIMIT 20')
  return {'settings':settings,'staff':staff,'posts':[{'id':r['id'],'kind':r['kind'],'title':r['title'],'body':r['body'],'created_at':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y'),'has_image':bool(r['has_image'])} for r in posts]}
+def image_media_type(data):
+ if data.startswith(bytes([137,80,78,71,13,10,26,10])): return 'image/png'
+ if data.startswith(b'GIF8'): return 'image/gif'
+ if data.startswith(b'RIFF') and data[8:12]==b'WEBP': return 'image/webp'
+ return 'image/jpeg'
+
 @app.get('/api/staff/{category}/photo')
 async def staff_photo(category:str):
  row=await pool.fetchrow('SELECT photo FROM staff_profiles WHERE category=$1',category)
  if not row or not row['photo']: raise HTTPException(404,'Rasm topilmadi')
- return Response(bytes(row['photo']),media_type='image/jpeg',headers={'Cache-Control':'no-store'})
+ return Response(bytes(row['photo']),media_type=image_media_type(bytes(row['photo'])),headers={'Cache-Control':'no-store'})
 @app.get('/api/posts/{post_id}/image')
 async def post_image(post_id:int):
  row=await pool.fetchrow('SELECT image FROM content_posts WHERE id=$1 AND active=TRUE',post_id)
  if not row or not row['image']: raise HTTPException(404,'Rasm topilmadi')
- return Response(bytes(row['image']),media_type='image/jpeg',headers={'Cache-Control':'no-store'})
+ return Response(bytes(row['image']),media_type=image_media_type(bytes(row['image'])),headers={'Cache-Control':'no-store'})
 @app.get('/api/my/applications')
 async def my_applications(request:Request):
     user=verify_init_data(request.headers.get('X-Telegram-Init-Data',''))
