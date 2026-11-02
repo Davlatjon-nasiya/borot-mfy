@@ -87,3 +87,93 @@ async def submit(payload:Application,request:Request):
   except Exception: logging.exception('Guruhga xabar yuborilmadi')
  await pool.execute('UPDATE arizalar SET dm_msg_id=$1,group_msg_id=$2 WHERE id=$3',dm,group,aid)
  return {'ok':True,'application_id':aid,'message':f'Murojaatingiz qabul qilindi. Ariza №{aid}'}
+
+
+# Secure admin API for the Telegram Mini App
+import base64
+from pydantic import BaseModel, Field
+def admin_user(request: Request):
+    user=verify_init_data(request.headers.get('X-Telegram-Init-Data',''))
+    ids={int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().isdigit()}
+    if int(user.get('id',0)) not in ids: raise HTTPException(403,'Admin huquqi mavjud emas.')
+    return user
+class AdminSettings(BaseModel):
+    mfy_name:str=Field(min_length=2,max_length=120)
+    mfy_address:str=Field(default='',max_length=250)
+    mfy_phone:str=Field(default='',max_length=50)
+class AdminStaff(BaseModel):
+    category:str
+    title:str=Field(min_length=2,max_length=120)
+    description:str=Field(default='',max_length=500)
+    photo_base64:str|None=None
+class AdminPost(BaseModel):
+    kind:str
+    title:str=Field(min_length=2,max_length=180)
+    body:str=Field(default='',max_length=4000)
+    photo_base64:str|None=None
+    active:bool=True
+def decode_photo(value):
+    if not value:return None
+    try: data=base64.b64decode(value.split(',',1)[-1],validate=True)
+    except Exception: raise HTTPException(400,'Rasm formati noto‘g‘ri.')
+    if len(data)>5*1024*1024: raise HTTPException(413,'Rasm 5 MB dan kichik bo‘lishi kerak.')
+    return data
+@app.get('/api/admin/overview')
+async def admin_overview(request:Request):
+    admin_user(request)
+    stats=await pool.fetch('SELECT status,COUNT(*) AS n FROM arizalar GROUP BY status')
+    apps=await pool.fetch('SELECT id,full_name,category,text,phone,address,status,created_at FROM arizalar ORDER BY id DESC LIMIT 100')
+    posts=await pool.fetch('SELECT id,kind,title,body,active,(image IS NOT NULL) AS has_image,created_at FROM content_posts ORDER BY id DESC LIMIT 100')
+    profiles=await pool.fetch('SELECT category,title,description,(photo IS NOT NULL) AS has_photo FROM staff_profiles')
+    pm={r['category']:r for r in profiles}
+    staff=[{'category':k,'title':pm[k]['title'] if k in pm else v[0],'description':pm[k]['description'] if k in pm else '', 'has_photo':bool(pm[k]['has_photo']) if k in pm else False} for k,v in CATEGORIES.items()]
+    return {'stats':{r['status']:r['n'] for r in stats},
+      'applications':[{'id':r['id'],'name':r['full_name'] or 'Fuqaro','category':CATEGORIES.get(r['category'],(r['category'],0))[0],'text':r['text'],'phone':r['phone'],'address':r['address'],'status':r['status'],'date':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M')} for r in apps],
+      'posts':[{'id':r['id'],'kind':r['kind'],'title':r['title'],'body':r['body'],'active':r['active'],'date':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y')} for r in posts],
+      'staff':staff,'settings':{k:await setting(k,'') for k in ('mfy_name','mfy_address','mfy_phone')}}
+@app.put('/api/admin/settings')
+async def admin_settings(p:AdminSettings,request:Request):
+    admin_user(request)
+    for k,v in p.model_dump().items():
+        await pool.execute('INSERT INTO app_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value',k,v.strip())
+    return {'ok':True}
+@app.put('/api/admin/staff')
+async def admin_staff(p:AdminStaff,request:Request):
+    admin_user(request)
+    if p.category not in CATEGORIES: raise HTTPException(400,'Xodim topilmadi.')
+    photo=decode_photo(p.photo_base64)
+    if photo is None:
+        await pool.execute('''INSERT INTO staff_profiles(category,title,description) VALUES($1,$2,$3) ON CONFLICT(category) DO UPDATE SET title=EXCLUDED.title,description=EXCLUDED.description,updated_at=NOW()''',p.category,p.title.strip(),p.description.strip())
+    else:
+        await pool.execute('''INSERT INTO staff_profiles(category,title,description,photo) VALUES($1,$2,$3,$4) ON CONFLICT(category) DO UPDATE SET title=EXCLUDED.title,description=EXCLUDED.description,photo=EXCLUDED.photo,updated_at=NOW()''',p.category,p.title.strip(),p.description.strip(),photo)
+    return {'ok':True}
+@app.post('/api/admin/posts')
+async def admin_post_create(p:AdminPost,request:Request):
+    admin_user(request)
+    if p.kind not in ('ad','post'): raise HTTPException(400,'Material turi noto‘g‘ri.')
+    row=await pool.fetchrow('INSERT INTO content_posts(kind,title,body,image,active) VALUES($1,$2,$3,$4,$5) RETURNING id',p.kind,p.title.strip(),p.body.strip(),decode_photo(p.photo_base64),p.active)
+    return {'ok':True,'id':row['id']}
+@app.put('/api/admin/posts/{pid}')
+async def admin_post_update(pid:int,p:AdminPost,request:Request):
+    admin_user(request)
+    if p.kind not in ('ad','post'): raise HTTPException(400,'Material turi noto‘g‘ri.')
+    if not await pool.fetchval('SELECT id FROM content_posts WHERE id=$1',pid): raise HTTPException(404,'Material topilmadi.')
+    photo=decode_photo(p.photo_base64)
+    if photo is None: await pool.execute('UPDATE content_posts SET kind=$1,title=$2,body=$3,active=$4 WHERE id=$5',p.kind,p.title.strip(),p.body.strip(),p.active,pid)
+    else: await pool.execute('UPDATE content_posts SET kind=$1,title=$2,body=$3,image=$4,active=$5 WHERE id=$6',p.kind,p.title.strip(),p.body.strip(),photo,p.active,pid)
+    return {'ok':True}
+@app.delete('/api/admin/posts/{pid}')
+async def admin_post_delete(pid:int,request:Request):
+    admin_user(request)
+    res=await pool.execute('DELETE FROM content_posts WHERE id=$1',pid)
+    if res=='DELETE 0': raise HTTPException(404,'Material topilmadi.')
+    return {'ok':True}
+@app.patch('/api/admin/applications/{aid}')
+async def admin_app_status(aid:int,payload:dict,request:Request):
+    admin_user(request); status=payload.get('status')
+    if status not in ('new','seen','done'): raise HTTPException(400,'Holat noto‘g‘ri.')
+    row=await pool.fetchrow('UPDATE arizalar SET status=$1 WHERE id=$2 RETURNING user_id',status,aid)
+    if not row: raise HTTPException(404,'Murojaat topilmadi.')
+    try: await bot.send_message(row['user_id'],{'new':f'🆕 №{aid} murojaatingiz qayta ko‘rib chiqiladi.','seen':f'👀 №{aid} murojaatingiz ko‘rib chiqilmoqda.','done':f'✅ №{aid} murojaatingiz hal qilindi.'}[status])
+    except Exception: logging.exception('Status xabari yuborilmadi')
+    return {'ok':True}
