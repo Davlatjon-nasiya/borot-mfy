@@ -43,6 +43,7 @@ async def lifespan(app):
   await c.execute('''CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL DEFAULT '')''')
   await c.execute('''CREATE TABLE IF NOT EXISTS staff_profiles(category TEXT PRIMARY KEY,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',photo BYTEA,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute('''CREATE TABLE IF NOT EXISTS content_posts(id SERIAL PRIMARY KEY,kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',image BYTEA,active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
+  await c.execute('''CREATE TABLE IF NOT EXISTS application_comments(id SERIAL PRIMARY KEY,application_id INTEGER NOT NULL REFERENCES arizalar(id) ON DELETE CASCADE,admin_id BIGINT NOT NULL,message TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute("INSERT INTO app_settings(key,value) VALUES('mfy_name','MAHALLA MUROJAAT') ON CONFLICT(key) DO NOTHING")
  bot=Bot(BOT_TOKEN,default=DefaultBotProperties(parse_mode=ParseMode.HTML)); yield
  if bot: await bot.session.close()
@@ -71,6 +72,16 @@ async def post_image(post_id:int):
  row=await pool.fetchrow('SELECT image FROM content_posts WHERE id=$1 AND active=TRUE',post_id)
  if not row or not row['image']: raise HTTPException(404,'Rasm topilmadi')
  return Response(bytes(row['image']),media_type='image/jpeg',headers={'Cache-Control':'no-store'})
+@app.get('/api/my/applications')
+async def my_applications(request:Request):
+    user=verify_init_data(request.headers.get('X-Telegram-Init-Data',''))
+    rows=await pool.fetch('SELECT id,category,text,status,created_at FROM arizalar WHERE user_id=$1 ORDER BY id DESC LIMIT 50',int(user['id']))
+    result=[]
+    for r in rows:
+        comments=await pool.fetch('SELECT message,created_at FROM application_comments WHERE application_id=$1 ORDER BY id ASC',r['id'])
+        result.append({'id':r['id'],'category':CATEGORIES.get(r['category'],(r['category'],0))[0],'text':r['text'],'status':r['status'],'date':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M'),'comments':[{'message':x['message'],'date':x['created_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M')} for x in comments]})
+    return {'applications':result}
+
 @app.post('/api/applications')
 async def submit(payload:Application,request:Request):
  user=verify_init_data(request.headers.get('X-Telegram-Init-Data',''))
@@ -168,12 +179,29 @@ async def admin_post_delete(pid:int,request:Request):
     res=await pool.execute('DELETE FROM content_posts WHERE id=$1',pid)
     if res=='DELETE 0': raise HTTPException(404,'Material topilmadi.')
     return {'ok':True}
+class AdminComment(BaseModel):
+    message:str=Field(min_length=2,max_length=2000)
+
+@app.post('/api/admin/applications/{aid}/comments')
+async def admin_application_comment(aid:int,payload:AdminComment,request:Request):
+    user=admin_user(request)
+    row=await pool.fetchrow('SELECT user_id FROM arizalar WHERE id=$1',aid)
+    if not row: raise HTTPException(404,'Murojaat topilmadi.')
+    message=payload.message.strip()
+    await pool.execute('INSERT INTO application_comments(application_id,admin_id,message) VALUES($1,$2,$3)',aid,int(user['id']),message)
+    try:
+        await bot.send_message(row['user_id'],f"💬 <b>№{aid} murojaatingiz bo‘yicha javob</b>\n\n{html.escape(message)}")
+    except Exception:
+        logging.exception('Mijozga izoh yuborilmadi')
+        raise HTTPException(502,'Izoh saqlandi, lekin Telegram xabari yuborilmadi. Bot mijoz bilan avval /start orqali bog‘langanini tekshiring.')
+    return {'ok':True}
+
 @app.patch('/api/admin/applications/{aid}')
 async def admin_app_status(aid:int,payload:dict,request:Request):
     admin_user(request); status=payload.get('status')
-    if status not in ('new','seen','done'): raise HTTPException(400,'Holat noto‘g‘ri.')
+    if status not in ('new','assigned','seen','in_progress','done'): raise HTTPException(400,'Holat noto‘g‘ri.')
     row=await pool.fetchrow('UPDATE arizalar SET status=$1 WHERE id=$2 RETURNING user_id',status,aid)
     if not row: raise HTTPException(404,'Murojaat topilmadi.')
-    try: await bot.send_message(row['user_id'],{'new':f'🆕 №{aid} murojaatingiz qayta ko‘rib chiqiladi.','seen':f'👀 №{aid} murojaatingiz ko‘rib chiqilmoqda.','done':f'✅ №{aid} murojaatingiz hal qilindi.'}[status])
+    try: await bot.send_message(row['user_id'],{'new':f'🆕 №{aid} murojaatingiz yangi holatga qaytarildi.','assigned':f'👤 №{aid} murojaatingiz mas’ul xodimga biriktirildi.','seen':f'👀 №{aid} murojaatingiz ko‘rib chiqilmoqda.','in_progress':f'🛠 №{aid} murojaatingiz ustida ish boshlandi.','done':f'✅ №{aid} murojaatingiz topshirildi / hal qilindi.'}[status])
     except Exception: logging.exception('Status xabari yuborilmadi')
     return {'ok':True}
