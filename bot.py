@@ -27,7 +27,7 @@ CATEGORIES={
  'ijtimoiy':('🤝 Ijtimoiy xodim',int(os.getenv('ID_IJTIMOIY','0'))),
  'soliq':('💼 Soliq inspektori',int(os.getenv('ID_SOLIQ','0'))),
 }
-STATUS={'new':'🆕 Yangi','assigned':'👤 Mas’ulga biriktirildi','seen':"👀 Ko‘rib chiqilmoqda",'in_progress':'🛠 Jarayonda','done':'✅ Hal qilindi'}
+STATUS={'new':'🆕 Yangi','assigned':'👤 Mas’ulga biriktirildi','contacted':'📞 Aloqaga chiqildi','seen':"👀 Ko‘rib chiqilmoqda",'in_progress':'🛠 Jarayonda','done':'✅ Hal qilindi'}
 router=Router()
 
 class AdminFlow(StatesGroup):
@@ -70,7 +70,7 @@ async def group_id():
 def home_kb():
  return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text='📱 Ilovani ochish',web_app=WebAppInfo(url=WEBAPP_URL))]],resize_keyboard=True,is_persistent=True,input_field_placeholder='Ilovani ochish uchun tugmani bosing')
 def status_kb(aid):
- kb=InlineKeyboardBuilder(); kb.button(text='👀 Ko‘rildi',callback_data=f'st:{aid}:seen'); kb.button(text='✅ Hal qilindi',callback_data=f'st:{aid}:done'); kb.adjust(2); return kb.as_markup()
+ kb=InlineKeyboardBuilder(); kb.button(text='📞 Aloqaga chiqildi',callback_data=f'st:{aid}:contacted'); kb.button(text='👀 Ko‘rildi',callback_data=f'st:{aid}:seen'); kb.button(text='🛠 Jarayonda',callback_data=f'st:{aid}:in_progress'); kb.button(text='✅ Hal qilindi',callback_data=f'st:{aid}:done'); kb.adjust(2); return kb.as_markup()
 def admin_kb():
  kb=InlineKeyboardBuilder()
  for title,data in [
@@ -217,14 +217,14 @@ async def edit_content_skip_photo(m:Message,state:FSMContext):
 async def set_status(call:CallbackQuery,bot:Bot):
  try: _,sid,new=call.data.split(':'); aid=int(sid)
  except ValueError: await call.answer('Noto‘g‘ri so‘rov',show_alert=True); return
- if new not in ('seen','done'): await call.answer('Noto‘g‘ri holat',show_alert=True); return
+ if new not in ('contacted','seen','in_progress','done'): await call.answer('Noto‘g‘ri holat',show_alert=True); return
  row=await pool.fetchrow('SELECT * FROM arizalar WHERE id=$1',aid)
  if not row: await call.answer('Ariza topilmadi',show_alert=True); return
  if not await can_view(call.from_user.id,row['category']): await call.answer('Bu ariza sizga tegishli emas',show_alert=True); return
  row=await pool.fetchrow('UPDATE arizalar SET status=$1 WHERE id=$2 RETURNING *',new,aid)
  try: await call.message.edit_reply_markup(reply_markup=status_kb(aid) if new!='done' else None)
  except Exception: pass
- try: await bot.send_message(row['user_id'],{'seen':f'👀 №{aid} murojaatingiz ko‘rib chiqilmoqda.','done':f'✅ №{aid} murojaatingiz hal qilindi.'}[new])
+ try: await bot.send_message(row['user_id'],{'contacted':f'📞 №{aid} murojaatingiz bo‘yicha mas’ul xodim siz bilan aloqaga chiqdi.','seen':f'👀 №{aid} murojaatingiz ko‘rib chiqilmoqda.','in_progress':f'🛠 №{aid} murojaatingiz ustida ish boshlandi.','done':f'✅ №{aid} murojaatingiz hal qilindi.'}[new])
  except Exception: pass
  target_group=await group_id()
  if row['group_msg_id'] and target_group:
