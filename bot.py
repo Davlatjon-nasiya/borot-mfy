@@ -56,7 +56,10 @@ async def staff_id(cat):
  value=await setting('staff_'+cat,str(CATEGORIES.get(cat,('',0))[1]))
  try:return int(value)
  except (TypeError,ValueError):return CATEGORIES.get(cat,('',0))[1]
-async def is_staff(uid): return any((await staff_id(k))==uid and uid!=0 for k in CATEGORIES)
+async def is_staff(uid):
+ for k in CATEGORIES:
+  if await staff_id(k)==uid and uid!=0:return True
+ return False
 async def can_view(uid,cat): return is_admin(uid) or await staff_id(cat)==uid
 async def group_id():
  value=await setting('group_id',str(GROUP_ID))
