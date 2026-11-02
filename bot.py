@@ -52,8 +52,16 @@ async def init_db():
   await c.execute("INSERT INTO app_settings(key,value) VALUES('mfy_name','MAHALLA MUROJAAT') ON CONFLICT(key) DO NOTHING")
 
 def is_admin(uid): return uid in ADMIN_IDS
-def is_staff(uid): return any(v[1]==uid and uid!=0 for v in CATEGORIES.values())
-def can_view(uid,cat): return is_admin(uid) or CATEGORIES.get(cat,('',0))[1]==uid
+async def staff_id(cat):
+ value=await setting('staff_'+cat,str(CATEGORIES.get(cat,('',0))[1]))
+ try:return int(value)
+ except (TypeError,ValueError):return CATEGORIES.get(cat,('',0))[1]
+async def is_staff(uid): return any((await staff_id(k))==uid and uid!=0 for k in CATEGORIES)
+async def can_view(uid,cat): return is_admin(uid) or await staff_id(cat)==uid
+async def group_id():
+ value=await setting('group_id',str(GROUP_ID))
+ try:return int(value)
+ except (TypeError,ValueError):return GROUP_ID
 
 def home_kb():
  return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text='📱 Ilovani ochish',web_app=WebAppInfo(url=WEBAPP_URL))]],resize_keyboard=True,is_persistent=True,input_field_placeholder='Ilovani ochish uchun tugmani bosing')
@@ -80,13 +88,13 @@ async def start(m:Message,state:FSMContext):
  await m.answer(f"Assalomu alaykum! 👋\n\n<b>{html.escape(name)}</b> murojaatlar platformasiga xush kelibsiz. Ariza yuborish uchun pastdagi 📱 Ilovani ochish tugmasini bosing.",reply_markup=home_kb())
 @router.message(Command('admin'))
 async def admin(m:Message):
- if not (is_admin(m.from_user.id) or is_staff(m.from_user.id)): await m.answer('Sizda admin panelga ruxsat yo‘q.'); return
+ if not (is_admin(m.from_user.id) or await is_staff(m.from_user.id)): await m.answer('Sizda admin panelga ruxsat yo‘q.'); return
  await m.answer('🔐 <b>Mahalla boshqaruv paneli</b>\nBo‘limni tanlang:',reply_markup=admin_kb() if is_admin(m.from_user.id) else InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='📊 Mening murojaatlarim',callback_data='adm:mine')]]))
 
 @router.callback_query(F.data.startswith('adm:'))
 async def admin_actions(call:CallbackQuery,state:FSMContext):
  uid=call.from_user.id; action=call.data.split(':',1)[1]
- if not (is_admin(uid) or is_staff(uid)): await call.answer('Ruxsat yo‘q',show_alert=True); return
+ if not (is_admin(uid) or await is_staff(uid)): await call.answer('Ruxsat yo‘q',show_alert=True); return
  if action not in ('mine',) and not is_admin(uid): await call.answer('Bu bo‘lim faqat bosh admin uchun.',show_alert=True); return
  if action=='stats':
   rows=await pool.fetch('SELECT status,COUNT(*) AS n FROM arizalar GROUP BY status'); counts={r['status']:r['n'] for r in rows}; total=sum(counts.values())
@@ -94,7 +102,7 @@ async def admin_actions(call:CallbackQuery,state:FSMContext):
  elif action in ('latest','new','mine'):
   where="WHERE status='new'" if action=='new' else ''; rows=await pool.fetch(f'SELECT * FROM arizalar {where} ORDER BY id DESC LIMIT 30'); shown=0
   for r in rows:
-   if not can_view(uid,r['category']): continue
+   if not await can_view(uid,r['category']): continue
    shown+=1; txt=f"📩 <b>№{r['id']}</b> — {STATUS[r['status']]}\n{CATEGORIES[r['category']][0]}\n📝 {html.escape(r['text'][:600])}\n📞 {html.escape(r['phone'])}\n📍 {html.escape(r['address'])}"
    await call.message.answer(txt,reply_markup=status_kb(r['id']) if r['status']!='done' else None)
   if not shown: await call.message.answer('Murojaatlar topilmadi.')
@@ -208,14 +216,15 @@ async def set_status(call:CallbackQuery,bot:Bot):
  if new not in ('seen','done'): await call.answer('Noto‘g‘ri holat',show_alert=True); return
  row=await pool.fetchrow('SELECT * FROM arizalar WHERE id=$1',aid)
  if not row: await call.answer('Ariza topilmadi',show_alert=True); return
- if not can_view(call.from_user.id,row['category']): await call.answer('Bu ariza sizga tegishli emas',show_alert=True); return
+ if not await can_view(call.from_user.id,row['category']): await call.answer('Bu ariza sizga tegishli emas',show_alert=True); return
  row=await pool.fetchrow('UPDATE arizalar SET status=$1 WHERE id=$2 RETURNING *',new,aid)
  try: await call.message.edit_reply_markup(reply_markup=status_kb(aid) if new!='done' else None)
  except Exception: pass
  try: await bot.send_message(row['user_id'],{'seen':f'👀 №{aid} murojaatingiz ko‘rib chiqilmoqda.','done':f'✅ №{aid} murojaatingiz hal qilindi.'}[new])
  except Exception: pass
- if row['group_msg_id'] and GROUP_ID:
-  try: await bot.send_message(GROUP_ID,f'Ariza №{aid} holati: {STATUS[new]}')
+ target_group=await group_id()
+ if row['group_msg_id'] and target_group:
+  try: await bot.send_message(target_group,f'Ariza №{aid} holati: {STATUS[new]}')
   except Exception: pass
  await call.answer('Holat yangilandi')
 
