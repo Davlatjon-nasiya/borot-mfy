@@ -193,9 +193,11 @@ async def admin_restore(payload:AdminRestore,request:Request):
     admin_user(request)
     try:
         raw=base64.b64decode(payload.backup_base64,validate=True)
-        if len(raw)>20*1024*1024: raise ValueError('Backup 20 MB dan katta.')
+        if len(raw)>20*1024*1024:
+            raise ValueError('Backup 20 MB dan katta.')
         snapshot=json.loads(gzip.decompress(raw).decode('utf-8'))
-        if snapshot.get('format')!='mahalla-murojaat-db-backup-v1': raise ValueError('Backup formati mos emas.')
+        if snapshot.get('format')!='mahalla-murojaat-db-backup-v1':
+            raise ValueError('Backup formati mos emas.')
     except Exception as e:
         raise HTTPException(400,'Backup faylini o‘qib bo‘lmadi: '+str(e))
     allowed={'arizalar','app_settings','staff_profiles','content_posts','application_comments'}
@@ -205,106 +207,32 @@ async def admin_restore(payload:AdminRestore,request:Request):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 for table,rows in snapshot.get('tables',{}).items():
-                    if table not in allowed or not isinstance(rows,list): continue
+                    if table not in allowed or not isinstance(rows,list):
+                        continue
                     cols=await conn.fetch("SELECT column_name,data_type,udt_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position",table)
                     types={x['column_name']:x for x in cols}
                     count=0
                     for row in rows:
-                        if not isinstance(row,dict): continue
+                        if not isinstance(row,dict):
+                            continue
                         keys=[k for k in row if k in types]
-                        if not keys: continue
+                        if not keys:
+                            continue
                         vals=[]
                         for key in keys:
-                            value=row[key]; typ=types[key]
-                            if value is not None and typ['udt_name']=='bytea': value=base64.b64decode(value,validate=True)
-                            elif value is not None and typ['data_type']=='timestamp with time zone': value=datetime.fromisoformat(value)
+                            value=row[key]
+                            typ=types[key]
+                            if value is not None and typ['udt_name']=='bytea':
+                                value=base64.b64decode(value,validate=True)
+                            elif value is not None and typ['data_type']=='timestamp with time zone':
+                                value=datetime.fromisoformat(value)
                             vals.append(value)
                         cols_sql=','.join('"'+k+'"' for k in keys)
-                        binds=','.join('
-async def admin_overview(request:Request):
-    admin_user(request)
-    stats=await pool.fetch('SELECT status,COUNT(*) AS n FROM arizalar GROUP BY status')
-    apps=await pool.fetch('SELECT id,full_name,category,text,phone,address,status,created_at FROM arizalar ORDER BY id DESC LIMIT 100')
-    posts=await pool.fetch('SELECT id,kind,title,body,active,(image IS NOT NULL) AS has_image,created_at FROM content_posts ORDER BY id DESC LIMIT 100')
-    profiles=await pool.fetch('SELECT category,title,description,(photo IS NOT NULL) AS has_photo FROM staff_profiles')
-    pm={r['category']:r for r in profiles}
-    staff=[{'category':k,'title':pm[k]['title'] if k in pm else v[0],'description':pm[k]['description'] if k in pm else '', 'has_photo':bool(pm[k]['has_photo']) if k in pm else False} for k,v in CATEGORIES.items()]
-    return {'stats':{r['status']:r['n'] for r in stats},
-      'applications':[{'id':r['id'],'name':r['full_name'] or 'Fuqaro','category':CATEGORIES.get(r['category'],(r['category'],0))[0],'text':r['text'],'phone':r['phone'],'address':r['address'],'status':r['status'],'date':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M')} for r in apps],
-      'posts':[{'id':r['id'],'kind':r['kind'],'title':r['title'],'body':r['body'],'active':r['active'],'date':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y')} for r in posts],
-      'staff':staff,'settings':{k:await setting(k,'') for k in ('mfy_name','mfy_address','mfy_phone')},
-      'routing':{'group_id':await setting('group_id',str(GROUP_ID)),'staff_ids':{k:await setting('staff_'+k,str(v[1])) for k,v in CATEGORIES.items()}}}
-@app.put('/api/admin/settings')
-async def admin_settings(p:AdminSettings,request:Request):
-    admin_user(request)
-    values=p.model_dump()
-    key_map={'group_id':'group_id','uchastkavoy_id':'staff_uchastkavoy','rais_id':'staff_rais','hokim_yordamchi_id':'staff_hokim_yordamchi','yoshlar_id':'staff_yoshlar','xotin_qizlar_id':'staff_xotin_qizlar','ijtimoiy_id':'staff_ijtimoiy','soliq_id':'staff_soliq'}
-    for k,v in values.items():
-        if k.endswith('_id') and v.strip() and not v.strip().lstrip('-').isdigit():
-            raise HTTPException(400,f'{k} faqat Telegram ID raqamidan iborat bo‘lishi kerak.')
-        db_key=key_map.get(k,k)
-        await pool.execute('INSERT INTO app_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value',db_key,v.strip())
-    return {'ok':True}
-@app.put('/api/admin/staff')
-async def admin_staff(p:AdminStaff,request:Request):
-    admin_user(request)
-    if p.category not in CATEGORIES: raise HTTPException(400,'Xodim topilmadi.')
-    photo=decode_photo(p.photo_base64)
-    if photo is None:
-        await pool.execute('''INSERT INTO staff_profiles(category,title,description) VALUES($1,$2,$3) ON CONFLICT(category) DO UPDATE SET title=EXCLUDED.title,description=EXCLUDED.description,updated_at=NOW()''',p.category,p.title.strip(),p.description.strip())
-    else:
-        await pool.execute('''INSERT INTO staff_profiles(category,title,description,photo) VALUES($1,$2,$3,$4) ON CONFLICT(category) DO UPDATE SET title=EXCLUDED.title,description=EXCLUDED.description,photo=EXCLUDED.photo,updated_at=NOW()''',p.category,p.title.strip(),p.description.strip(),photo)
-    return {'ok':True}
-@app.post('/api/admin/posts')
-async def admin_post_create(p:AdminPost,request:Request):
-    admin_user(request)
-    if p.kind not in ('ad','post'): raise HTTPException(400,'Material turi noto‘g‘ri.')
-    row=await pool.fetchrow('INSERT INTO content_posts(kind,title,body,image,active) VALUES($1,$2,$3,$4,$5) RETURNING id',p.kind,p.title.strip(),p.body.strip(),decode_photo(p.photo_base64),p.active)
-    return {'ok':True,'id':row['id']}
-@app.put('/api/admin/posts/{pid}')
-async def admin_post_update(pid:int,p:AdminPost,request:Request):
-    admin_user(request)
-    if p.kind not in ('ad','post'): raise HTTPException(400,'Material turi noto‘g‘ri.')
-    if not await pool.fetchval('SELECT id FROM content_posts WHERE id=$1',pid): raise HTTPException(404,'Material topilmadi.')
-    photo=decode_photo(p.photo_base64)
-    if photo is None: await pool.execute('UPDATE content_posts SET kind=$1,title=$2,body=$3,active=$4 WHERE id=$5',p.kind,p.title.strip(),p.body.strip(),p.active,pid)
-    else: await pool.execute('UPDATE content_posts SET kind=$1,title=$2,body=$3,image=$4,active=$5 WHERE id=$6',p.kind,p.title.strip(),p.body.strip(),photo,p.active,pid)
-    return {'ok':True}
-@app.delete('/api/admin/posts/{pid}')
-async def admin_post_delete(pid:int,request:Request):
-    admin_user(request)
-    res=await pool.execute('DELETE FROM content_posts WHERE id=$1',pid)
-    if res=='DELETE 0': raise HTTPException(404,'Material topilmadi.')
-    return {'ok':True}
-class AdminComment(BaseModel):
-    message:str=Field(min_length=2,max_length=2000)
-
-@app.post('/api/admin/applications/{aid}/comments')
-async def admin_application_comment(aid:int,payload:AdminComment,request:Request):
-    user=admin_user(request)
-    row=await pool.fetchrow('SELECT user_id FROM arizalar WHERE id=$1',aid)
-    if not row: raise HTTPException(404,'Murojaat topilmadi.')
-    message=payload.message.strip()
-    await pool.execute('INSERT INTO application_comments(application_id,admin_id,message) VALUES($1,$2,$3)',aid,int(user['id']),message)
-    try:
-        await bot.send_message(row['user_id'],f"💬 <b>№{aid} murojaatingiz bo‘yicha javob</b>\n\n{html.escape(message)}")
-    except Exception:
-        logging.exception('Mijozga izoh yuborilmadi')
-        raise HTTPException(502,'Izoh saqlandi, lekin Telegram xabari yuborilmadi. Bot mijoz bilan avval /start orqali bog‘langanini tekshiring.')
-    return {'ok':True}
-
-@app.patch('/api/admin/applications/{aid}')
-async def admin_app_status(aid:int,payload:dict,request:Request):
-    admin_user(request); status=payload.get('status')
-    if status not in ('new','assigned','seen','in_progress','done'): raise HTTPException(400,'Holat noto‘g‘ri.')
-    row=await pool.fetchrow('UPDATE arizalar SET status=$1 WHERE id=$2 RETURNING user_id',status,aid)
-    if not row: raise HTTPException(404,'Murojaat topilmadi.')
-    try: await bot.send_message(row['user_id'],{'new':f'🆕 №{aid} murojaatingiz yangi holatga qaytarildi.','assigned':f'👤 №{aid} murojaatingiz mas’ul xodimga biriktirildi.','seen':f'👀 №{aid} murojaatingiz ko‘rib chiqilmoqda.','in_progress':f'🛠 №{aid} murojaatingiz ustida ish boshlandi.','done':f'✅ №{aid} murojaatingiz topshirildi / hal qilindi.'}[status])
-    except Exception: logging.exception('Status xabari yuborilmadi')
-    return {'ok':True}
-+str(i+1) for i in range(len(keys)))
-                        result=await conn.execute('INSERT INTO "'+table+'" ('+cols_sql+') VALUES ('+binds+') ON CONFLICT DO NOTHING',*vals)
-                        if result.endswith('1'): count+=1
+                        binds=','.join(['$%d' % (i+1) for i in range(len(keys))])
+                        sql='INSERT INTO "'+table+'" ('+cols_sql+') VALUES ('+binds+') ON CONFLICT DO NOTHING'
+                        result=await conn.execute(sql,*vals)
+                        if result.endswith('1'):
+                            count+=1
                     restored[table]=count
                 for table in ('arizalar','content_posts','application_comments'):
                     await conn.execute("SELECT setval(pg_get_serial_sequence($1,'id'),GREATEST(COALESCE((SELECT MAX(id) FROM "+table+"),1),1),true)",table)
