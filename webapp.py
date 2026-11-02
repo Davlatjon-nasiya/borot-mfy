@@ -1,4 +1,4 @@
-import os,hmac,hashlib,json,html,logging
+import os,hmac,hashlib,json,html,logging,base64,gzip,io
 from urllib.parse import parse_qsl
 from datetime import timezone,timedelta
 from contextlib import asynccontextmanager
@@ -33,6 +33,12 @@ def verify_init_data(init_data):
  except Exception: raise HTTPException(401,'Foydalanuvchi ma’lumoti topilmadi.')
 async def setting(key,default=''):
  return await pool.fetchval('SELECT value FROM app_settings WHERE key=$1',key) or default
+async def routing_id(key,env_default=0):
+ value=await setting(key,str(env_default))
+ try:return int(value)
+ except (TypeError,ValueError):return int(env_default)
+async def effective_staff_id(category):
+ return await routing_id('staff_'+category,CATEGORIES.get(category,('',0))[1])
 @asynccontextmanager
 async def lifespan(app):
  global pool,bot
@@ -45,12 +51,45 @@ async def lifespan(app):
   await c.execute('''CREATE TABLE IF NOT EXISTS content_posts(id SERIAL PRIMARY KEY,kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',image BYTEA,active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute('''CREATE TABLE IF NOT EXISTS application_comments(id SERIAL PRIMARY KEY,application_id INTEGER NOT NULL REFERENCES arizalar(id) ON DELETE CASCADE,admin_id BIGINT NOT NULL,message TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute("INSERT INTO app_settings(key,value) VALUES('mfy_name','MAHALLA MUROJAAT') ON CONFLICT(key) DO NOTHING")
- bot=Bot(BOT_TOKEN,default=DefaultBotProperties(parse_mode=ParseMode.HTML)); yield
+ bot=Bot(BOT_TOKEN,default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+ try:
+  await send_database_backup('deploy')
+ except Exception:
+  logging.exception('Deploy backup Telegramga yuborilmadi')
+ yield
  if bot: await bot.session.close()
  if pool: await pool.close()
 app=FastAPI(title='Mahalla Murojaat',lifespan=lifespan); app.mount('/static',StaticFiles(directory='static'),name='static')
 @app.get('/')
 async def index(): return FileResponse('static/index.html')
+async def send_database_backup(reason='manual'):
+    if not bot: raise RuntimeError('Telegram bot hali ishga tushmagan')
+    admin_ids=sorted({int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().lstrip('-').isdigit()})
+    if not admin_ids: raise RuntimeError('ADMIN_IDS sozlanmagan: backup yuborish uchun admin Telegram ID kerak')
+    tables=('arizalar','app_settings','staff_profiles','content_posts','application_comments')
+    from datetime import datetime
+    snapshot={'format':'mahalla-murojaat-db-backup-v1','created_at':datetime.now(TZ).isoformat(),'reason':reason,'tables':{}}
+    for table in tables:
+        exists=await pool.fetchval('SELECT to_regclass($1)','public.'+table)
+        if not exists:
+            snapshot['tables'][table]=[]
+            continue
+        rows=await pool.fetch('SELECT * FROM '+table+' ORDER BY 1')
+        snapshot['tables'][table]=[{k:(base64.b64encode(v).decode('ascii') if isinstance(v,(bytes,bytearray,memoryview)) else v.isoformat() if hasattr(v,'isoformat') else v) for k,v in dict(row).items()} for row in rows]
+    raw=json.dumps(snapshot,ensure_ascii=False,separators=(',',':')).encode('utf-8')
+    data=gzip.compress(raw,compresslevel=6)
+    filename='mahalla_backup_'+datetime.now(TZ).strftime('%Y%m%d_%H%M%S')+'.json.gz'
+    caption=f"🗄 <b>Mahalla bazasi backup</b>\nSabab: {html.escape(reason)}\nJadval: {len(tables)}\nHajm: {len(data)//1024} KB"
+    sent=0
+    for admin_id in admin_ids:
+        try:
+            await bot.send_document(admin_id,io.BytesIO(data),filename=filename,caption=caption)
+            sent+=1
+        except Exception:
+            logging.exception('Backup admin %s ga yuborilmadi',admin_id)
+    if not sent: raise RuntimeError('Backup hech bir admin Telegramiga yetkazilmadi. Admin botda /start bosgan bo‘lishi kerak.')
+    return {'ok':True,'sent_to':sent,'filename':filename,'size':len(data)}
+
 @app.get('/health')
 async def health(): return {'ok':True}
 @app.get('/api/public')
@@ -89,12 +128,12 @@ async def submit(payload:Application,request:Request):
  row=await pool.fetchrow('''INSERT INTO arizalar(user_id,full_name,username,category,text,phone,address) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *''',int(user['id']),(user.get('first_name','')+' '+user.get('last_name','')).strip(),user.get('username'),payload.category,payload.text.strip(),payload.phone.strip(),payload.address.strip())
  aid=row['id']; title=CATEGORIES[payload.category][0]; safe=f"📩 <b>Yangi murojaat №{aid}</b>\n📂 Yo‘nalish: {title}\n📝 Mazmuni: {html.escape(payload.text)}\n🕒 {row['created_at'].astimezone(TZ):%d.%m.%Y %H:%M}"
  private=safe+f"\n\n👤 Fuqaro: {html.escape((user.get('first_name','')+' '+user.get('last_name','')).strip())}\n📞 Telefon: {html.escape(payload.phone)}\n📍 Manzil: {html.escape(payload.address)}"
- dm=group=None; specialist=CATEGORIES[payload.category][1]
+ dm=group=None; specialist=await effective_staff_id(payload.category); target_group=await routing_id('group_id',GROUP_ID)
  if specialist:
   try: dm=(await bot.send_message(specialist,private)).message_id
   except Exception: logging.exception('Xodimga shaxsiy xabar yuborilmadi')
- if GROUP_ID:
-  try: group=(await bot.send_message(GROUP_ID,safe)).message_id
+ if target_group:
+  try: group=(await bot.send_message(target_group,safe)).message_id
   except Exception: logging.exception('Guruhga xabar yuborilmadi')
  await pool.execute('UPDATE arizalar SET dm_msg_id=$1,group_msg_id=$2 WHERE id=$3',dm,group,aid)
  return {'ok':True,'application_id':aid,'message':f'Murojaatingiz qabul qilindi. Ariza №{aid}'}
@@ -112,6 +151,14 @@ class AdminSettings(BaseModel):
     mfy_name:str=Field(min_length=2,max_length=120)
     mfy_address:str=Field(default='',max_length=250)
     mfy_phone:str=Field(default='',max_length=50)
+    group_id:str=Field(default='',max_length=30)
+    uchastkavoy_id:str=Field(default='',max_length=30)
+    rais_id:str=Field(default='',max_length=30)
+    hokim_yordamchi_id:str=Field(default='',max_length=30)
+    yoshlar_id:str=Field(default='',max_length=30)
+    xotin_qizlar_id:str=Field(default='',max_length=30)
+    ijtimoiy_id:str=Field(default='',max_length=30)
+    soliq_id:str=Field(default='',max_length=30)
 class AdminStaff(BaseModel):
     category:str
     title:str=Field(min_length=2,max_length=120)
@@ -129,6 +176,14 @@ def decode_photo(value):
     except Exception: raise HTTPException(400,'Rasm formati noto‘g‘ri.')
     if len(data)>5*1024*1024: raise HTTPException(413,'Rasm 5 MB dan kichik bo‘lishi kerak.')
     return data
+@app.post('/api/admin/backup')
+async def admin_backup(request:Request):
+    admin_user(request)
+    try:return await send_database_backup('admin-panel')
+    except Exception as e:
+        logging.exception('Qo‘lda backup xatosi')
+        raise HTTPException(500,str(e))
+
 @app.get('/api/admin/overview')
 async def admin_overview(request:Request):
     admin_user(request)
@@ -141,11 +196,15 @@ async def admin_overview(request:Request):
     return {'stats':{r['status']:r['n'] for r in stats},
       'applications':[{'id':r['id'],'name':r['full_name'] or 'Fuqaro','category':CATEGORIES.get(r['category'],(r['category'],0))[0],'text':r['text'],'phone':r['phone'],'address':r['address'],'status':r['status'],'date':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M')} for r in apps],
       'posts':[{'id':r['id'],'kind':r['kind'],'title':r['title'],'body':r['body'],'active':r['active'],'date':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y')} for r in posts],
-      'staff':staff,'settings':{k:await setting(k,'') for k in ('mfy_name','mfy_address','mfy_phone')}}
+      'staff':staff,'settings':{k:await setting(k,'') for k in ('mfy_name','mfy_address','mfy_phone')},
+      'routing':{'group_id':await setting('group_id',str(GROUP_ID)),'staff_ids':{k:await setting('staff_'+k,str(v[1])) for k,v in CATEGORIES.items()}}}
 @app.put('/api/admin/settings')
 async def admin_settings(p:AdminSettings,request:Request):
     admin_user(request)
-    for k,v in p.model_dump().items():
+    values=p.model_dump()
+    for k,v in values.items():
+        if k.endswith('_id') and v.strip() and not v.strip().lstrip('-').isdigit():
+            raise HTTPException(400,f'{k} faqat Telegram ID raqamidan iborat bo‘lishi kerak.')
         await pool.execute('INSERT INTO app_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value',k,v.strip())
     return {'ok':True}
 @app.put('/api/admin/staff')
