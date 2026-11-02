@@ -22,7 +22,7 @@ CATEGORIES={
  'ijtimoiy':('🤝 Ijtimoiy xodim',int(os.getenv('ID_IJTIMOIY','0'))),
  'soliq':('💼 Soliq inspektori',int(os.getenv('ID_SOLIQ','0'))),}
 class Application(BaseModel):
- category:str; text:str=Field(min_length=10,max_length=4000); phone:str=Field(min_length=9,max_length=30); address:str=Field(min_length=5,max_length=500)
+ category:str; text:str=Field(min_length=5,max_length=4000); phone:str=Field(min_length=9,max_length=30); address:str=Field(min_length=5,max_length=500)
 def verify_init_data(init_data):
  if not BOT_TOKEN or not init_data: raise HTTPException(401,'Telegram ilovasini bot ichidan oching.')
  vals=dict(parse_qsl(init_data,keep_blank_values=True)); received=vals.pop('hash',None)
