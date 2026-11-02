@@ -119,7 +119,7 @@ async def admin_actions(call:CallbackQuery,state:FSMContext):
   if not rows: await call.message.answer('Hozircha material yo‘q.')
   for r in rows:
    toggle='hide' if r['active'] else 'show'
-   kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='✏️ Tahrirlash',callback_data=f\"adm:edit:{r['id']}\"),InlineKeyboardButton(text=('🙈 Yashirish' if r['active'] else '👁 Ko‘rsatish'),callback_data=f\"adm:{toggle}:{r['id']}\")]])
+   kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='✏️ Tahrirlash',callback_data=f\"adm:edit:{r['id']}\"),InlineKeyboardButton(text=('🙈 Yashirish' if r['active'] else '👁 Ko‘rsatish'),callback_data=f\"adm:{toggle}:{r['id']}\"),InlineKeyboardButton(text='🗑 O‘chirish',callback_data=f\"adm:delete:{r['id']}\")]])
    await call.message.answer(f\"#{r['id']} {'🟢 Faol' if r['active'] else '⚪ Yashirilgan'}\\n{html.escape(r['title'])} · {r['created_at']:%d.%m.%Y}\",reply_markup=kb)
  elif action=='add_ad': await state.set_state(AdminFlow.ad_title); await call.message.answer('Reklama sarlavhasini yuboring:')
  elif action=='add_post': await state.set_state(AdminFlow.post_title); await call.message.answer('Tadbir yoki bajarilgan ish sarlavhasini yuboring:')
