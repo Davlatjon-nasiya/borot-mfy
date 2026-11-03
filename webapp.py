@@ -55,6 +55,75 @@ def staff_application_keyboard(aid):
         [InlineKeyboardButton(text='👀 Ko‘rildi',callback_data=f'st:{aid}:seen'),InlineKeyboardButton(text='🛠 Jarayonda',callback_data=f'st:{aid}:in_progress')],
         [InlineKeyboardButton(text='✅ Hal qilindi',callback_data=f'st:{aid}:done')]
     ])
+async def notify_application_staff(row, message_prefix):
+    aid=row['id']
+    title=CATEGORIES.get(row['category'],(row['category'],0))[0]
+    text=(f"{message_prefix}\\n\\n📩 <b>Murojaat №{aid}</b>\\n"
+          f"📂 {title}\\n📝 {html.escape(row['text'][:700])}\\n"
+          f"📞 {html.escape(row['phone'])}\\n📍 {html.escape(row['address'])}\\n"
+          f"🗓 Qabul qilingan: {row['created_at'].astimezone(TZ):%d.%m.%Y}")
+    staff=await effective_staff_id(row['category'])
+    sent=False
+    if staff:
+        try:
+            await bot.send_message(staff,text,reply_markup=staff_application_keyboard(aid))
+            sent=True
+        except Exception:
+            logging.exception("Muddat eslatmasi xodimga yuborilmadi: %s",aid)
+    return sent
+
+async def application_deadline_worker():
+    steps=((3,'reminder_3_sent','⏰ <b>3 KUNLIK ESLATMA</b>\\nMurojaat hali ko‘rib chiqilmagan. Iltimos, holatini yangilang.'),
+           (7,'reminder_7_sent','⚠️ <b>7 KUNLIK ESLATMA</b>\\nMurojaat bo‘yicha hali javob qayd etilmagan. Zudlik bilan ko‘rib chiqing.'),
+           (12,'reminder_12_sent','🚨 <b>12 KUNLIK OGOHLANTIRISH</b>\\n15 kunlik muddat tugashiga 3 kun qoldi. Murojaatni ko‘rib chiqing.'))
+    while True:
+        try:
+            for days,column,message in steps:
+                rows=await pool.fetch(f"""UPDATE arizalar SET {column}=TRUE
+                    WHERE id IN (SELECT id FROM arizalar
+                      WHERE status IN ('new','assigned') AND created_at <= NOW() - ($1 * INTERVAL '1 day')
+                        AND {column}=FALSE
+                      FOR UPDATE SKIP LOCKED)
+                    RETURNING *""",days)
+                for row in rows:
+                    if not await notify_application_staff(row,message):
+                        await pool.execute(f"UPDATE arizalar SET {column}=FALSE WHERE id=$1",row['id'])
+            overdue=await pool.fetch("""UPDATE arizalar SET escalated_at=NOW()
+                WHERE id IN (SELECT id FROM arizalar WHERE status IN ('new','assigned')
+                  AND created_at <= NOW() - INTERVAL '15 days' AND escalated_at IS NULL
+                  FOR UPDATE SKIP LOCKED) RETURNING *""")
+            admin_ids=sorted({int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().lstrip('-').isdigit()})
+            for row in overdue:
+                aid=row['id']
+                alert=("🚨 <b>15 KUNLIK MUDDAT O‘TDI!</b>\\nMurojaat haligacha ko‘rib chiqilmagan. "
+                       "Mas’ul xodimga qayta yuborildi. Rahbariyat nazoratiga olindi.")
+                sent=await notify_application_staff(row,alert)
+                for admin_id in admin_ids:
+                    try:
+                        await bot.send_message(admin_id, f"{alert}\\n\\n📩 Ariza №{aid}\\n"
+                            f"👤 {html.escape(row['full_name'] or 'Fuqaro')}\\n"
+                            f"📂 {CATEGORIES.get(row['category'],(row['category'],0))[0]}\\n"
+                            f"📞 {html.escape(row['phone'])}\\n📍 {html.escape(row['address'])}",
+                            reply_markup=staff_application_keyboard(aid))
+                        sent=True
+                    except Exception:
+                        logging.exception("15 kunlik ogohlantirish adminga yuborilmadi: %s",admin_id)
+                target_group=await routing_id('group_id',GROUP_ID)
+                if target_group:
+                    try:
+                        await bot.send_message(target_group, f"{alert}\\n📩 Ariza №{aid}",
+                                               reply_markup=staff_application_keyboard(aid))
+                        sent=True
+                    except Exception:
+                        logging.exception("15 kunlik ogohlantirish guruhga yuborilmadi")
+                if not sent:
+                    await pool.execute("UPDATE arizalar SET escalated_at=NULL WHERE id=$1",aid)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("Arizalar muddat nazorati xatosi")
+        await asyncio.sleep(3600)
+
 @asynccontextmanager
 async def lifespan(app):
  global pool,bot
@@ -66,13 +135,29 @@ async def lifespan(app):
   await c.execute('''CREATE TABLE IF NOT EXISTS staff_profiles(category TEXT PRIMARY KEY,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',photo BYTEA,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute('''CREATE TABLE IF NOT EXISTS content_posts(id SERIAL PRIMARY KEY,kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',image BYTEA,active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute('''CREATE TABLE IF NOT EXISTS application_comments(id SERIAL PRIMARY KEY,application_id INTEGER NOT NULL REFERENCES arizalar(id) ON DELETE CASCADE,admin_id BIGINT NOT NULL,message TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS reminder_3_sent BOOLEAN NOT NULL DEFAULT FALSE")
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS reminder_7_sent BOOLEAN NOT NULL DEFAULT FALSE")
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS reminder_12_sent BOOLEAN NOT NULL DEFAULT FALSE")
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS escalated_at TIMESTAMPTZ")
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMPTZ")
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+  await c.execute("""CREATE TABLE IF NOT EXISTS application_status_history(
+   id BIGSERIAL PRIMARY KEY, application_id INTEGER NOT NULL REFERENCES arizalar(id) ON DELETE CASCADE,
+   old_status TEXT, new_status TEXT NOT NULL, actor_id BIGINT, note TEXT NOT NULL DEFAULT '',
+   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
   await c.execute("INSERT INTO app_settings(key,value) VALUES('mfy_name','MAHALLA MUROJAAT') ON CONFLICT(key) DO NOTHING")
  bot=Bot(BOT_TOKEN,default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+ deadline_task=asyncio.create_task(application_deadline_worker())
  try:
   await send_database_backup('deploy')
  except Exception:
   logging.exception('Deploy backup Telegramga yuborilmadi')
  yield
+ deadline_task.cancel()
+ try:
+  await deadline_task
+ except asyncio.CancelledError:
+  pass
  if bot: await bot.session.close()
  if pool: await pool.close()
 app=FastAPI(title='Mahalla Murojaat',lifespan=lifespan); app.mount('/static',StaticFiles(directory='static'),name='static')
@@ -82,7 +167,7 @@ async def send_database_backup(reason='manual'):
     if not bot: raise RuntimeError('Telegram bot hali ishga tushmagan')
     admin_ids=sorted({int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().lstrip('-').isdigit()})
     if not admin_ids: raise RuntimeError('ADMIN_IDS sozlanmagan: backup yuborish uchun admin Telegram ID kerak')
-    tables=('arizalar','app_settings','staff_profiles','content_posts','application_comments')
+    tables=('arizalar','app_settings','staff_profiles','content_posts','application_comments','application_status_history')
     snapshot={'format':'mahalla-murojaat-db-backup-v1','created_at':datetime.now(TZ).isoformat(),'reason':reason,'tables':{}}
     for table in tables:
         exists=await pool.fetchval('SELECT to_regclass($1)','public.'+table)
@@ -351,7 +436,10 @@ async def admin_application_comment(aid:int,payload:AdminComment,request:Request
 async def admin_app_status(aid:int,payload:dict,request:Request):
     admin_user(request); status=payload.get('status')
     if status not in ('new','assigned','contacted','seen','in_progress','done'): raise HTTPException(400,'Holat noto‘g‘ri.')
-    row=await pool.fetchrow('UPDATE arizalar SET status=$1 WHERE id=$2 RETURNING user_id',status,aid)
+    old=await pool.fetchrow('SELECT status FROM arizalar WHERE id=$1',aid)
+    if not old: raise HTTPException(404,'Murojaat topilmadi.')
+    row=await pool.fetchrow("UPDATE arizalar SET status=$1,updated_at=NOW(),first_seen_at=CASE WHEN $1 IN ('contacted','seen','in_progress','done') THEN COALESCE(first_seen_at,NOW()) ELSE first_seen_at END WHERE id=$2 RETURNING user_id",status,aid)
+    await pool.execute('INSERT INTO application_status_history(application_id,old_status,new_status,actor_id) VALUES($1,$2,$3,$4)',aid,old['status'],status,int(verify_init_data(request.headers.get('X-Telegram-Init-Data',''))['id']))
     if not row: raise HTTPException(404,'Murojaat topilmadi.')
     try: await bot.send_message(row['user_id'],{'new':f'🆕 №{aid} murojaatingiz yangi holatga qaytarildi.','assigned':f'👤 №{aid} murojaatingiz mas’ul xodimga biriktirildi.','contacted':f'📞 №{aid} murojaatingiz bo‘yicha mas’ul xodim siz bilan aloqaga chiqdi.','seen':f'👀 №{aid} murojaatingiz ko‘rib chiqilmoqda.','in_progress':f'🛠 №{aid} murojaatingiz ustida ish boshlandi.','done':f'✅ №{aid} murojaatingiz topshirildi / hal qilindi.'}[status])
     except Exception: logging.exception('Status xabari yuborilmadi')
