@@ -58,9 +58,9 @@ def staff_application_keyboard(aid):
 async def notify_application_staff(row, message_prefix):
     aid=row['id']
     title=CATEGORIES.get(row['category'],(row['category'],0))[0]
-    text=(f"{message_prefix}\\n\\n📩 <b>Murojaat №{aid}</b>\\n"
-          f"📂 {title}\\n📝 {html.escape(row['text'][:700])}\\n"
-          f"📞 {html.escape(row['phone'])}\\n📍 {html.escape(row['address'])}\\n"
+    text=(f"{message_prefix}\n\n📩 <b>Murojaat №{aid}</b>\n"
+          f"📂 {title}\n📝 {html.escape(row['text'][:700])}\n"
+          f"📞 {html.escape(row['phone'])}\n📍 {html.escape(row['address'])}\n"
           f"🗓 Qabul qilingan: {row['created_at'].astimezone(TZ):%d.%m.%Y}")
     staff=await effective_staff_id(row['category'])
     sent=False
@@ -73,9 +73,9 @@ async def notify_application_staff(row, message_prefix):
     return sent
 
 async def application_deadline_worker():
-    steps=((3,'reminder_3_sent','⏰ <b>3 KUNLIK ESLATMA</b>\\nMurojaat hali ko‘rib chiqilmagan. Iltimos, holatini yangilang.'),
-           (7,'reminder_7_sent','⚠️ <b>7 KUNLIK ESLATMA</b>\\nMurojaat bo‘yicha hali javob qayd etilmagan. Zudlik bilan ko‘rib chiqing.'),
-           (12,'reminder_12_sent','🚨 <b>12 KUNLIK OGOHLANTIRISH</b>\\n15 kunlik muddat tugashiga 3 kun qoldi. Murojaatni ko‘rib chiqing.'))
+    steps=((3,'reminder_3_sent','⏰ <b>3 KUNLIK ESLATMA</b>\nMurojaat hali ko‘rib chiqilmagan. Iltimos, holatini yangilang.'),
+           (7,'reminder_7_sent','⚠️ <b>7 KUNLIK ESLATMA</b>\nMurojaat bo‘yicha hali javob qayd etilmagan. Zudlik bilan ko‘rib chiqing.'),
+           (12,'reminder_12_sent','🚨 <b>12 KUNLIK OGOHLANTIRISH</b>\n15 kunlik muddat tugashiga 3 kun qoldi. Murojaatni ko‘rib chiqing.'))
     while True:
         try:
             for days,column,message in steps:
@@ -95,15 +95,15 @@ async def application_deadline_worker():
             admin_ids=sorted({int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().lstrip('-').isdigit()})
             for row in overdue:
                 aid=row['id']
-                alert=("🚨 <b>15 KUNLIK MUDDAT O‘TDI!</b>\\nMurojaat haligacha ko‘rib chiqilmagan. "
+                alert=("🚨 <b>15 KUNLIK MUDDAT O‘TDI!</b>\nMurojaat haligacha ko‘rib chiqilmagan. "
                        "Mas’ul xodimga qayta yuborildi. Rahbariyat nazoratiga olindi.")
                 sent=await notify_application_staff(row,alert)
                 for admin_id in admin_ids:
                     try:
-                        await bot.send_message(admin_id, f"{alert}\\n\\n📩 Ariza №{aid}\\n"
-                            f"👤 {html.escape(row['full_name'] or 'Fuqaro')}\\n"
-                            f"📂 {CATEGORIES.get(row['category'],(row['category'],0))[0]}\\n"
-                            f"📞 {html.escape(row['phone'])}\\n📍 {html.escape(row['address'])}",
+                        await bot.send_message(admin_id, f"{alert}\n\n📩 Ariza №{aid}\n"
+                            f"👤 {html.escape(row['full_name'] or 'Fuqaro')}\n"
+                            f"📂 {CATEGORIES.get(row['category'],(row['category'],0))[0]}\n"
+                            f"📞 {html.escape(row['phone'])}\n📍 {html.escape(row['address'])}",
                             reply_markup=staff_application_keyboard(aid))
                         sent=True
                     except Exception:
@@ -111,7 +111,7 @@ async def application_deadline_worker():
                 target_group=await routing_id('group_id',GROUP_ID)
                 if target_group:
                     try:
-                        await bot.send_message(target_group, f"{alert}\\n📩 Ariza №{aid}",
+                        await bot.send_message(target_group, f"{alert}\n📩 Ariza №{aid}",
                                                reply_markup=staff_application_keyboard(aid))
                         sent=True
                     except Exception:
@@ -305,7 +305,7 @@ async def admin_restore(payload:AdminRestore,request:Request):
             raise ValueError('Backup formati mos emas.')
     except Exception as e:
         raise HTTPException(400,'Backup faylini o‘qib bo‘lmadi: '+str(e))
-    allowed={'arizalar','app_settings','staff_profiles','content_posts','application_comments'}
+    allowed={'arizalar','app_settings','staff_profiles','content_posts','application_comments','application_status_history'}
     restored={}
     try:
         async with pool.acquire() as conn:
