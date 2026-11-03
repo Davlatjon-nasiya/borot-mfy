@@ -81,7 +81,7 @@ async def application_deadline_worker():
             for days,column,message in steps:
                 rows=await pool.fetch(f"""UPDATE arizalar SET {column}=TRUE
                     WHERE id IN (SELECT id FROM arizalar
-                      WHERE status IN ('new','assigned') AND created_at <= NOW() - ($1 * INTERVAL '1 day')
+                      WHERE status IN ('new','assigned') AND first_seen_at IS NULL AND created_at <= NOW() - ($1 * INTERVAL '1 day')
                         AND {column}=FALSE
                       FOR UPDATE SKIP LOCKED)
                     RETURNING *""",days)
@@ -90,7 +90,7 @@ async def application_deadline_worker():
                         await pool.execute(f"UPDATE arizalar SET {column}=FALSE WHERE id=$1",row['id'])
             overdue=await pool.fetch("""UPDATE arizalar SET escalated_at=NOW()
                 WHERE id IN (SELECT id FROM arizalar WHERE status IN ('new','assigned')
-                  AND created_at <= NOW() - INTERVAL '15 days' AND escalated_at IS NULL
+                  AND first_seen_at IS NULL AND created_at <= NOW() - INTERVAL '15 days' AND escalated_at IS NULL
                   FOR UPDATE SKIP LOCKED) RETURNING *""")
             admin_ids=sorted({int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().lstrip('-').isdigit()})
             for row in overdue:
