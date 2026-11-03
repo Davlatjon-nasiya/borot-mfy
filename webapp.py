@@ -1,4 +1,4 @@
-import os,hmac,hashlib,json,html,logging,base64,gzip,io
+import asyncio,os,hmac,hashlib,json,html,logging,base64,gzip,io
 from urllib.parse import parse_qsl
 from datetime import timezone,timedelta,datetime
 from contextlib import asynccontextmanager
@@ -232,7 +232,9 @@ async def submit(payload:Application,request:Request):
  user=verify_init_data(request.headers.get('X-Telegram-Init-Data',''))
  if payload.category not in CATEGORIES: raise HTTPException(400,'Kategoriya noto‘g‘ri')
  row=await pool.fetchrow('''INSERT INTO arizalar(user_id,full_name,username,category,text,phone,address) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *''',int(user['id']),(user.get('first_name','')+' '+user.get('last_name','')).strip(),user.get('username'),payload.category,payload.text.strip(),payload.phone.strip(),payload.address.strip())
- aid=row['id']; title=CATEGORIES[payload.category][0]; safe=f"📩 <b>Yangi murojaat №{aid}</b>\n📂 Yo‘nalish: {title}\n📝 Mazmuni: {html.escape(payload.text)}\n🕒 {row['created_at'].astimezone(TZ):%d.%m.%Y %H:%M}"
+ aid=row['id']
+ await pool.execute("INSERT INTO application_status_history(application_id,old_status,new_status,actor_id,note) VALUES($1,NULL,'new',$2,'Ariza qabul qilindi')",aid,int(user['id']))
+ title=CATEGORIES[payload.category][0]; safe=f"📩 <b>Yangi murojaat №{aid}</b>\n📂 Yo‘nalish: {title}\n📝 Mazmuni: {html.escape(payload.text)}\n🕒 {row['created_at'].astimezone(TZ):%d.%m.%Y %H:%M}"
  private=safe+f"\n\n👤 Fuqaro: {html.escape((user.get('first_name','')+' '+user.get('last_name','')).strip())}\n📞 Telefon: {html.escape(payload.phone)}\n📍 Manzil: {html.escape(payload.address)}"
  dm=group=None; specialist=await effective_staff_id(payload.category); target_group=await routing_id('group_id',GROUP_ID)
  if specialist:
@@ -434,12 +436,12 @@ async def admin_application_comment(aid:int,payload:AdminComment,request:Request
 
 @app.patch('/api/admin/applications/{aid}')
 async def admin_app_status(aid:int,payload:dict,request:Request):
-    admin_user(request); status=payload.get('status')
+    actor=admin_user(request); status=payload.get('status')
     if status not in ('new','assigned','contacted','seen','in_progress','done'): raise HTTPException(400,'Holat noto‘g‘ri.')
     old=await pool.fetchrow('SELECT status FROM arizalar WHERE id=$1',aid)
     if not old: raise HTTPException(404,'Murojaat topilmadi.')
     row=await pool.fetchrow("UPDATE arizalar SET status=$1,updated_at=NOW(),first_seen_at=CASE WHEN $1 IN ('contacted','seen','in_progress','done') THEN COALESCE(first_seen_at,NOW()) ELSE first_seen_at END WHERE id=$2 RETURNING user_id",status,aid)
-    await pool.execute('INSERT INTO application_status_history(application_id,old_status,new_status,actor_id) VALUES($1,$2,$3,$4)',aid,old['status'],status,int(verify_init_data(request.headers.get('X-Telegram-Init-Data',''))['id']))
+    await pool.execute('INSERT INTO application_status_history(application_id,old_status,new_status,actor_id) VALUES($1,$2,$3,$4)',aid,old['status'],status,int(actor['id']))
     if not row: raise HTTPException(404,'Murojaat topilmadi.')
     try: await bot.send_message(row['user_id'],{'new':f'🆕 №{aid} murojaatingiz yangi holatga qaytarildi.','assigned':f'👤 №{aid} murojaatingiz mas’ul xodimga biriktirildi.','contacted':f'📞 №{aid} murojaatingiz bo‘yicha mas’ul xodim siz bilan aloqaga chiqdi.','seen':f'👀 №{aid} murojaatingiz ko‘rib chiqilmoqda.','in_progress':f'🛠 №{aid} murojaatingiz ustida ish boshlandi.','done':f'✅ №{aid} murojaatingiz topshirildi / hal qilindi.'}[status])
     except Exception: logging.exception('Status xabari yuborilmadi')
