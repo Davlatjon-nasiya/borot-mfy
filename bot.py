@@ -50,6 +50,16 @@ async def init_db():
   await c.execute('''CREATE TABLE IF NOT EXISTS staff_profiles (category TEXT PRIMARY KEY,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',photo BYTEA,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute('''CREATE TABLE IF NOT EXISTS content_posts (id SERIAL PRIMARY KEY,kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',image BYTEA,active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute('''CREATE TABLE IF NOT EXISTS application_comments(id SERIAL PRIMARY KEY,application_id INTEGER NOT NULL REFERENCES arizalar(id) ON DELETE CASCADE,admin_id BIGINT NOT NULL,message TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS reminder_3_sent BOOLEAN NOT NULL DEFAULT FALSE")
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS reminder_7_sent BOOLEAN NOT NULL DEFAULT FALSE")
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS reminder_12_sent BOOLEAN NOT NULL DEFAULT FALSE")
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS escalated_at TIMESTAMPTZ")
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMPTZ")
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+  await c.execute("""CREATE TABLE IF NOT EXISTS application_status_history(
+   id BIGSERIAL PRIMARY KEY, application_id INTEGER NOT NULL REFERENCES arizalar(id) ON DELETE CASCADE,
+   old_status TEXT, new_status TEXT NOT NULL, actor_id BIGINT, note TEXT NOT NULL DEFAULT '',
+   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
   await c.execute("INSERT INTO app_settings(key,value) VALUES('mfy_name','MAHALLA MUROJAAT') ON CONFLICT(key) DO NOTHING")
 
 def is_admin(uid): return uid in ADMIN_IDS
@@ -221,7 +231,9 @@ async def set_status(call:CallbackQuery,bot:Bot):
  row=await pool.fetchrow('SELECT * FROM arizalar WHERE id=$1',aid)
  if not row: await call.answer('Ariza topilmadi',show_alert=True); return
  if not await can_view(call.from_user.id,row['category']): await call.answer('Bu ariza sizga tegishli emas',show_alert=True); return
- row=await pool.fetchrow('UPDATE arizalar SET status=$1 WHERE id=$2 RETURNING *',new,aid)
+ old_status=row['status']
+ row=await pool.fetchrow("UPDATE arizalar SET status=$1,updated_at=NOW(),first_seen_at=CASE WHEN $1 IN ('contacted','seen','in_progress','done') THEN COALESCE(first_seen_at,NOW()) ELSE first_seen_at END WHERE id=$2 RETURNING *",new,aid)
+ await pool.execute('INSERT INTO application_status_history(application_id,old_status,new_status,actor_id) VALUES($1,$2,$3,$4)',aid,old_status,new,call.from_user.id)
  try: await call.message.edit_reply_markup(reply_markup=status_kb(aid) if new!='done' else None)
  except Exception: pass
  try: await bot.send_message(row['user_id'],{'contacted':f'📞 №{aid} murojaatingiz bo‘yicha mas’ul xodim siz bilan aloqaga chiqdi.','seen':f'👀 №{aid} murojaatingiz ko‘rib chiqilmoqda.','in_progress':f'🛠 №{aid} murojaatingiz ustida ish boshlandi.','done':f'✅ №{aid} murojaatingiz hal qilindi.'}[new])
