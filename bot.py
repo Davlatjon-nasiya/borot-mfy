@@ -223,6 +223,60 @@ async def edit_content_skip_photo(m:Message,state:FSMContext):
  d=await state.get_data(); await pool.execute('UPDATE content_posts SET title=$1,body=$2 WHERE id=$3',d['edit_title'],d['edit_body'],d['edit_id'])
  await state.clear(); await m.answer('✅ Material matni yangilandi, avvalgi rasm saqlandi.')
 
+async def application_deadline_worker(bot:Bot):
+ steps=((3,'reminder_3_sent','⏰ <b>3 KUNLIK ESLATMA</b>\\nMurojaat hali ko‘rib chiqilmagan. Iltimos, holatini yangilang.'),
+        (7,'reminder_7_sent','⚠️ <b>7 KUNLIK ESLATMA</b>\\nMurojaat bo‘yicha hali javob qayd etilmagan. Zudlik bilan ko‘rib chiqing.'),
+        (12,'reminder_12_sent','🚨 <b>12 KUNLIK OGOHLANTIRISH</b>\\n15 kunlik muddat tugashiga 3 kun qoldi. Murojaatni ko‘rib chiqing.'))
+ while True:
+  try:
+   for days,column,message in steps:
+    rows=await pool.fetch(f"""UPDATE arizalar SET {column}=TRUE
+      WHERE id IN (SELECT id FROM arizalar WHERE status IN ('new','assigned')
+       AND created_at <= NOW() - ($1 * INTERVAL '1 day') AND {column}=FALSE
+       FOR UPDATE SKIP LOCKED) RETURNING *""",days)
+    for row in rows:
+     staff=await staff_id(row['category'])
+     if staff:
+      try:
+       await bot.send_message(staff,f"{message}\\n\\n📩 <b>Murojaat №{row['id']}</b>\\n"
+        f"📝 {html.escape(row['text'][:700])}\\n📞 {html.escape(row['phone'])}\\n"
+        f"📍 {html.escape(row['address'])}",reply_markup=status_kb(row['id']))
+      except Exception:
+       logging.exception("Muddat eslatmasi yuborilmadi: %s",row['id'])
+       await pool.execute(f"UPDATE arizalar SET {column}=FALSE WHERE id=$1",row['id'])
+     else:
+      await pool.execute(f"UPDATE arizalar SET {column}=FALSE WHERE id=$1",row['id'])
+   overdue=await pool.fetch("""UPDATE arizalar SET escalated_at=NOW()
+    WHERE id IN (SELECT id FROM arizalar WHERE status IN ('new','assigned')
+     AND created_at <= NOW() - INTERVAL '15 days' AND escalated_at IS NULL
+     FOR UPDATE SKIP LOCKED) RETURNING *""")
+   admins=sorted({int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().lstrip('-').isdigit()})
+   for row in overdue:
+    aid=row['id']; alert="🚨 <b>15 KUNLIK MUDDAT O‘TDI!</b>\\nMurojaat ko‘rib chiqilmadi. Mas’ul xodimga qayta yuborildi."
+    sent=False; staff=await staff_id(row['category'])
+    if staff:
+     try:
+      await bot.send_message(staff,f"{alert}\\n\\n📩 <b>Ariza №{aid}</b>\\n"
+       f"📝 {html.escape(row['text'][:700])}\\n📞 {html.escape(row['phone'])}\\n"
+       f"📍 {html.escape(row['address'])}",reply_markup=status_kb(aid)); sent=True
+     except Exception: logging.exception("15 kunlik qayta yuborish xatosi: %s",aid)
+    for admin_id in admins:
+     try:
+      await bot.send_message(admin_id,f"{alert}\\n📩 Ariza №{aid}\\n"
+       f"👤 {html.escape(row['full_name'] or 'Fuqaro')}\\n"
+       f"📂 {CATEGORIES.get(row['category'],(row['category'],0))[0]}\\n"
+       f"📞 {html.escape(row['phone'])}",reply_markup=status_kb(aid)); sent=True
+     except Exception: logging.exception("15 kunlik admin ogohlantirishi yuborilmadi")
+    gid=await group_id()
+    if gid:
+     try:
+      await bot.send_message(gid,f"{alert}\\n📩 Ariza №{aid}",reply_markup=status_kb(aid)); sent=True
+     except Exception: logging.exception("15 kunlik guruh ogohlantirishi yuborilmadi")
+    if not sent: await pool.execute("UPDATE arizalar SET escalated_at=NULL WHERE id=$1",aid)
+  except asyncio.CancelledError: raise
+  except Exception: logging.exception("Arizalar muddat nazorati xatosi")
+  await asyncio.sleep(3600)
+
 @router.callback_query(F.data.startswith('st:'))
 async def set_status(call:CallbackQuery,bot:Bot):
  try: _,sid,new=call.data.split(':'); aid=int(sid)
@@ -248,5 +302,13 @@ async def main():
  logging.basicConfig(level=logging.INFO)
  if not BOT_TOKEN: raise RuntimeError('BOT_TOKEN yo‘q')
  await init_db(); bot=Bot(BOT_TOKEN,default=DefaultBotProperties(parse_mode=ParseMode.HTML))
- dp=Dispatcher(storage=MemoryStorage()); dp.include_router(router); await dp.start_polling(bot)
+ dp=Dispatcher(storage=MemoryStorage()); dp.include_router(router)
+ deadline_task=asyncio.create_task(application_deadline_worker(bot))
+ try: await dp.start_polling(bot)
+ finally:
+  deadline_task.cancel()
+  try: await deadline_task
+  except asyncio.CancelledError: pass
+  await bot.session.close()
+  if pool: await pool.close()
 if __name__=='__main__': asyncio.run(main())
