@@ -1,6 +1,6 @@
 import os,hmac,hashlib,json,html,logging,base64,gzip,io
 from urllib.parse import parse_qsl
-from datetime import timezone,timedelta
+from datetime import timezone,timedelta,datetime
 from contextlib import asynccontextmanager
 import asyncpg
 from aiogram import Bot
@@ -22,6 +22,8 @@ CATEGORIES={
  'xotin_qizlar':('👩 Xotin-qizlar faoli',int(os.getenv('ID_XOTIN_QIZLAR','0'))),
  'ijtimoiy':('🤝 Ijtimoiy xodim',int(os.getenv('ID_IJTIMOIY','0'))),
  'soliq':('💼 Soliq inspektori',int(os.getenv('ID_SOLIQ','0'))),}
+# Qabul vaqtlari admin paneldan o'zgartirilmaguncha shu namuna ko'rsatiladi
+DEFAULT_RECEPTION=[('Mahalla raisi','Dushanba – Juma','09:00 – 18:00'),('Hokim yordamchisi','Dushanba – Juma','09:00 – 17:00'),('Profilaktika inspektori','Dushanba – Shanba','09:00 – 18:00'),('Yoshlar yetakchisi','Dushanba – Juma','09:00 – 17:00'),('Xotin-qizlar faoli','Dushanba – Juma','09:00 – 17:00'),('Ijtimoiy xodim','Dushanba – Juma','09:00 – 17:00'),('Soliq inspektori','Chorshanba, Juma','10:00 – 16:00')]
 class Application(BaseModel):
  category:str; text:str=Field(min_length=5,max_length=4000); phone:str=Field(min_length=9,max_length=30); address:str=Field(min_length=5,max_length=500)
 def verify_init_data(init_data):
@@ -40,6 +42,13 @@ async def routing_id(key,env_default=0):
  except (TypeError,ValueError):return int(env_default)
 async def effective_staff_id(category):
  return await routing_id('staff_'+category,CATEGORIES.get(category,('',0))[1])
+async def get_reception():
+ raw=await setting('reception','')
+ try:
+  data=json.loads(raw) if raw else None
+  if isinstance(data,list): return data
+ except Exception: pass
+ return [{'name':n,'days':d,'hours':h} for n,d,h in DEFAULT_RECEPTION]
 def staff_application_keyboard(aid):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='📞 Aloqaga chiqildi',callback_data=f'st:{aid}:contacted')],
@@ -74,7 +83,6 @@ async def send_database_backup(reason='manual'):
     admin_ids=sorted({int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().lstrip('-').isdigit()})
     if not admin_ids: raise RuntimeError('ADMIN_IDS sozlanmagan: backup yuborish uchun admin Telegram ID kerak')
     tables=('arizalar','app_settings','staff_profiles','content_posts','application_comments')
-    from datetime import datetime
     snapshot={'format':'mahalla-murojaat-db-backup-v1','created_at':datetime.now(TZ).isoformat(),'reason':reason,'tables':{}}
     for table in tables:
         exists=await pool.fetchval('SELECT to_regclass($1)','public.'+table)
@@ -107,7 +115,7 @@ async def public_data():
  for key,(title,_) in CATEGORIES.items():
   p=bycat.get(key,{}); staff.append({'id':key,'title':p.get('title') or title,'description':p.get('description') or '', 'has_photo':bool(p.get('has_photo'))})
  posts=await pool.fetch('SELECT id,kind,title,body,(image IS NOT NULL) AS has_image,created_at FROM content_posts WHERE active=TRUE ORDER BY id DESC LIMIT 20')
- return {'settings':settings,'staff':staff,'posts':[{'id':r['id'],'kind':r['kind'],'title':r['title'],'body':r['body'],'created_at':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y'),'has_image':bool(r['has_image'])} for r in posts]}
+ return {'settings':settings,'staff':staff,'reception':await get_reception(),'posts':[{'id':r['id'],'kind':r['kind'],'title':r['title'],'body':r['body'],'created_at':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y'),'has_image':bool(r['has_image'])} for r in posts]}
 def image_media_type(data):
  if data.startswith(bytes([137,80,78,71,13,10,26,10])): return 'image/png'
  if data.startswith(b'GIF8'): return 'image/gif'
@@ -152,9 +160,7 @@ async def submit(payload:Application,request:Request):
  return {'ok':True,'application_id':aid,'message':f'Murojaatingiz qabul qilindi. Ariza №{aid}'}
 
 
-# Secure admin API for the Telegram Mini App
-import base64
-from pydantic import BaseModel, Field
+# ---------------------------------------------------------------- Admin API (Telegram Mini App)
 def admin_user(request: Request):
     user=verify_init_data(request.headers.get('X-Telegram-Init-Data',''))
     ids={int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().isdigit()}
@@ -214,7 +220,6 @@ async def admin_restore(payload:AdminRestore,request:Request):
         raise HTTPException(400,'Backup faylini o‘qib bo‘lmadi: '+str(e))
     allowed={'arizalar','app_settings','staff_profiles','content_posts','application_comments'}
     restored={}
-    from datetime import datetime
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -266,6 +271,7 @@ async def admin_overview(request:Request):
       'applications':[{'id':r['id'],'name':r['full_name'] or 'Fuqaro','category':CATEGORIES.get(r['category'],(r['category'],0))[0],'text':r['text'],'phone':r['phone'],'address':r['address'],'status':r['status'],'date':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M')} for r in apps],
       'posts':[{'id':r['id'],'kind':r['kind'],'title':r['title'],'body':r['body'],'active':r['active'],'date':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y')} for r in posts],
       'staff':staff,'settings':{k:await setting(k,'') for k in ('mfy_name','mfy_address','mfy_phone')},
+      'reception':await get_reception(),
       'routing':{'group_id':await setting('group_id',str(GROUP_ID)),'staff_ids':{k:await setting('staff_'+k,str(v[1])) for k,v in CATEGORIES.items()}}}
 @app.put('/api/admin/settings')
 async def admin_settings(p:AdminSettings,request:Request):
@@ -288,6 +294,21 @@ async def admin_staff(p:AdminStaff,request:Request):
     else:
         await pool.execute('''INSERT INTO staff_profiles(category,title,description,photo) VALUES($1,$2,$3,$4) ON CONFLICT(category) DO UPDATE SET title=EXCLUDED.title,description=EXCLUDED.description,photo=EXCLUDED.photo,updated_at=NOW()''',p.category,p.title.strip(),p.description.strip(),photo)
     return {'ok':True}
+
+# ---- Qabul kunlari va ish vaqti
+class ReceptionItem(BaseModel):
+    name:str=Field(min_length=1,max_length=120)
+    days:str=Field(default='',max_length=120)
+    hours:str=Field(default='',max_length=60)
+class AdminReception(BaseModel):
+    items:list[ReceptionItem]=Field(max_length=30)
+@app.put('/api/admin/reception')
+async def admin_reception(p:AdminReception,request:Request):
+    admin_user(request)
+    data=[{'name':x.name.strip(),'days':x.days.strip(),'hours':x.hours.strip()} for x in p.items if x.name.strip()]
+    await pool.execute('INSERT INTO app_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value','reception',json.dumps(data,ensure_ascii=False))
+    return {'ok':True}
+
 @app.post('/api/admin/posts')
 async def admin_post_create(p:AdminPost,request:Request):
     admin_user(request)
@@ -335,3 +356,24 @@ async def admin_app_status(aid:int,payload:dict,request:Request):
     try: await bot.send_message(row['user_id'],{'new':f'🆕 №{aid} murojaatingiz yangi holatga qaytarildi.','assigned':f'👤 №{aid} murojaatingiz mas’ul xodimga biriktirildi.','contacted':f'📞 №{aid} murojaatingiz bo‘yicha mas’ul xodim siz bilan aloqaga chiqdi.','seen':f'👀 №{aid} murojaatingiz ko‘rib chiqilmoqda.','in_progress':f'🛠 №{aid} murojaatingiz ustida ish boshlandi.','done':f'✅ №{aid} murojaatingiz topshirildi / hal qilindi.'}[status])
     except Exception: logging.exception('Status xabari yuborilmadi')
     return {'ok':True}
+
+# ---- Arizalarni tanlab o'chirish
+class AdminDeleteApps(BaseModel):
+    ids:list[int]=Field(min_length=1,max_length=200)
+
+@app.post('/api/admin/applications/delete')
+async def admin_apps_delete(payload:AdminDeleteApps,request:Request):
+    admin_user(request)
+    ids=list(set(payload.ids))
+    rows=await pool.fetch('DELETE FROM arizalar WHERE id=ANY($1::int[]) RETURNING id,category,dm_msg_id,group_msg_id',ids)
+    target_group=await routing_id('group_id',GROUP_ID)
+    for r in rows:
+        if r['group_msg_id'] and target_group:
+            try: await bot.delete_message(target_group,r['group_msg_id'])
+            except Exception: logging.warning('Guruh xabari o‘chirilmadi (ariza %s)',r['id'])
+        if r['dm_msg_id']:
+            sid=await effective_staff_id(r['category'])
+            if sid:
+                try: await bot.delete_message(sid,r['dm_msg_id'])
+                except Exception: logging.warning('Xodim xabari o‘chirilmadi (ariza %s)',r['id'])
+    return {'ok':True,'deleted':len(rows)}
