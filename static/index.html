@@ -69,8 +69,8 @@ button,input,textarea,select{font:inherit}
 .adm-muted,.adm-hint,.adm-stat small,.adm-item small{color:var(--muted)}
 .adm-muted{font-size:11px;margin:4px 0}.adm-hint{font-size:12.5px;line-height:1.55;margin:6px 0 14px}
 .adm-close,.adm-tab,.adm-btn{border:0;border-radius:999px;padding:10px 14px;font-weight:700}
-.adm-tabs{display:flex;flex-wrap:wrap;gap:7px;overflow:visible;padding:8px 0 14px}
-.adm-tab{white-space:nowrap;font-size:13px;background:var(--soft);color:var(--ink);padding:11px 15px}
+.adm-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;overflow:visible;padding:8px 0 14px;width:100%}
+.adm-tab{width:100%;min-width:0;white-space:normal;text-align:center;font-size:12px;line-height:1.25;background:var(--soft);color:var(--ink);padding:12px 7px;border-radius:14px}
 .adm-tab.on{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;box-shadow:0 5px 14px rgba(15,118,110,.3)}
 .adm-panel,.adm-stat{background:var(--card);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow)}
 .adm-panel{padding:14px;margin:9px 0}.adm-panel h3{font-size:15px;margin:0 0 12px}
@@ -161,7 +161,7 @@ loadMyApplications();
 <button id="adminLaunch">⚙️ Admin panel</button>
 <div id="adminScreen"><div class="adm-wrap">
 <header class="adm-head"><div><h2>Mahalla boshqaruvi</h2><p class="adm-muted">Admin panel · Boshqaruv markazi</p></div><button class="adm-close" id="admClose">✕ Yopish</button></header>
-<nav class="adm-tabs"><button class="adm-tab on" data-adm-tab="home">📊 Umumiy</button><button class="adm-tab" data-adm-tab="apps">📨 Murojaatlar</button><button class="adm-tab" data-adm-tab="admins">👤 Adminlar</button><button class="adm-tab" data-adm-tab="posts">📢 Reklama / yangilik</button><button class="adm-tab" data-adm-tab="staff">👥 Xodimlar</button><button class="adm-tab" data-adm-tab="recv">🕒 Qabul vaqti</button><button class="adm-tab" data-adm-tab="mfy">🏷 MFY</button><button class="adm-tab" data-adm-tab="leader">🧭 Rahbar paneli</button><button class="adm-tab" data-adm-tab="rating">🏆 Xodimlar reytingi</button><button class="adm-tab" data-adm-tab="excel">📥 Excel hisobot</button></nav>
+<nav class="adm-tabs"><button class="adm-tab" data-adm-tab="admins">👤 Admin qo‘shish</button><button class="adm-tab on" data-adm-tab="home">📊 Umumiy</button><button class="adm-tab" data-adm-tab="apps">📨 Murojaatlar</button><button class="adm-tab" data-adm-tab="posts">📢 Reklama / yangilik</button><button class="adm-tab" data-adm-tab="staff">👥 Xodimlar</button><button class="adm-tab" data-adm-tab="recv">🕒 Qabul vaqti</button><button class="adm-tab" data-adm-tab="mfy">🏷 MFY</button><button class="adm-tab" data-adm-tab="leader">🧭 Rahbar paneli</button><button class="adm-tab" data-adm-tab="rating">🏆 Xodimlar reytingi</button><button class="adm-tab" data-adm-tab="excel">📥 Excel hisobot</button></nav>
 <div id="admContent"><div class="adm-panel">Yuklanmoqda...</div></div>
 </div></div>
 <script>
