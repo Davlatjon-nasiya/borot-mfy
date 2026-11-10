@@ -122,22 +122,22 @@ async def admin_actions(call:CallbackQuery,state:FSMContext):
  if action=='stats':
   rows=await pool.fetch('SELECT status,COUNT(*) AS n FROM arizalar GROUP BY status'); counts={r['status']:r['n'] for r in rows}; total=sum(counts.values())
   overdue=await pool.fetchval("SELECT COUNT(*) FROM arizalar WHERE status NOT IN ('done') AND created_at <= NOW()-INTERVAL '15 days'") or 0
-  await call.message.answer(f"📊 <b>Umumiy statistika</b>\\nJami: {total}\\n🆕 Yangi: {counts.get('new',0)}\\n👤 Biriktirilgan: {counts.get('assigned',0)}\\n👀 Ko‘rilayotgan: {counts.get('seen',0)}\\n🛠 Jarayonda: {counts.get('in_progress',0)}\\n✅ Hal qilingan: {counts.get('done',0)}\\n🚨 15 kundan oshgan: {overdue}")
+  await call.message.answer(f"📊 <b>Umumiy statistika</b>\nJami: {total}\n🆕 Yangi: {counts.get('new',0)}\n👤 Biriktirilgan: {counts.get('assigned',0)}\n👀 Ko‘rilayotgan: {counts.get('seen',0)}\n🛠 Jarayonda: {counts.get('in_progress',0)}\n✅ Hal qilingan: {counts.get('done',0)}\n🚨 15 kundan oshgan: {overdue}")
  elif action=='leader':
   rows=await pool.fetch('SELECT status,COUNT(*) AS n FROM arizalar GROUP BY status'); counts={r['status']:r['n'] for r in rows}; total=sum(counts.values())
   pending=counts.get('new',0)+counts.get('assigned',0)+counts.get('contacted',0)+counts.get('seen',0)+counts.get('in_progress',0)
   overdue=await pool.fetchval("SELECT COUNT(*) FROM arizalar WHERE status!='done' AND created_at <= NOW()-INTERVAL '15 days'") or 0
   avg_days=await pool.fetchval("SELECT ROUND(AVG(EXTRACT(EPOCH FROM (updated_at-created_at))/86400)::numeric,1) FROM arizalar WHERE status='done'") or 0
   by_cat=await pool.fetch("SELECT category,COUNT(*) AS total,COUNT(*) FILTER(WHERE status='done') AS done FROM arizalar GROUP BY category ORDER BY total DESC")
-  lines='\\n'.join(f"• {html.escape(CATEGORIES.get(r['category'],(r['category'],0))[0])}: {r['done']}/{r['total']} hal qilindi" for r in by_cat) or 'Hozircha murojaat yo‘q'
-  await call.message.answer(f"🧭 <b>RAHBAR PANELI</b>\\n\\n📨 Jami: <b>{total}</b>\\n⏳ Ochiq: <b>{pending}</b>\\n✅ Hal qilingan: <b>{counts.get('done',0)}</b>\\n🚨 15 kundan oshgan: <b>{overdue}</b>\\n⏱ Hal qilish o‘rtachasi: <b>{avg_days} kun</b>\\n\\n<b>Yo‘nalishlar kesimida:</b>\\n{lines}")
+  lines='\n'.join(f"• {html.escape(CATEGORIES.get(r['category'],(r['category'],0))[0])}: {r['done']}/{r['total']} hal qilindi" for r in by_cat) or 'Hozircha murojaat yo‘q'
+  await call.message.answer(f"🧭 <b>RAHBAR PANELI</b>\n\n📨 Jami: <b>{total}</b>\n⏳ Ochiq: <b>{pending}</b>\n✅ Hal qilingan: <b>{counts.get('done',0)}</b>\n🚨 15 kundan oshgan: <b>{overdue}</b>\n⏱ Hal qilish o‘rtachasi: <b>{avg_days} kun</b>\n\n<b>Yo‘nalishlar kesimida:</b>\n{lines}")
  elif action=='rating':
   rows=await pool.fetch("SELECT category,COUNT(*) FILTER(WHERE status='done') AS done,COUNT(*) AS total,ROUND(AVG(EXTRACT(EPOCH FROM (updated_at-created_at))/86400) FILTER(WHERE status='done')::numeric,1) AS avg_days FROM arizalar GROUP BY category ORDER BY done DESC,total DESC")
   lines=[]
   for i,r in enumerate(rows,1):
    title=CATEGORIES.get(r['category'],(r['category'],0))[0]
    lines.append(f"{i}. {html.escape(title)} — ✅ {r['done']} ta / jami {r['total']} ta / o‘rtacha {r['avg_days'] or 0} kun")
-  await call.message.answer("🏆 <b>XODIMLAR REYTINGI</b>\\n\\n"+('\\n'.join(lines) if lines else 'Hozircha ma’lumot yo‘q'))
+  await call.message.answer("🏆 <b>XODIMLAR REYTINGI</b>\n\n"+('\n'.join(lines) if lines else 'Hozircha ma’lumot yo‘q'))
  elif action=='excel':
   rows=await pool.fetch("SELECT id,full_name,username,category,text,phone,address,status,created_at,updated_at FROM arizalar ORDER BY id DESC LIMIT 10000")
   wb=Workbook(); ws=wb.active; ws.title='Murojaatlar'
