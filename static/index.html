@@ -61,7 +61,7 @@ button,input,textarea,select{font:inherit}
 .status-actions{display:flex;flex-wrap:wrap;gap:5px}
 .reply-row{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}.reply-row .adm-field{margin:0 0 7px;min-height:65px}
 @media(max-width:380px){.my-request-top{align-items:flex-start;flex-direction:column}.adm-stats{grid-template-columns:repeat(3,minmax(0,1fr))}.adm-stat{padding:10px}.adm-stat b{font-size:19px}}
-#adminLaunch{display:none;position:fixed;right:15px;bottom:16px;z-index:12;border:0;border-radius:999px;padding:13px 18px;background:var(--accent-dark);color:#fff;font-weight:800;box-shadow:0 8px 26px rgba(11,79,74,.4)}
+#adminNav{display:none}#adminLaunch{display:none;position:fixed;right:15px;bottom:16px;z-index:12;border:0;border-radius:999px;padding:13px 18px;background:var(--accent-dark);color:#fff;font-weight:800;box-shadow:0 8px 26px rgba(11,79,74,.4)}
 #adminScreen{display:none;position:fixed;inset:0;z-index:40;overflow:auto;background:var(--bg);color:var(--ink)}
 .adm-wrap{max-width:900px;margin:auto;padding:12px 15px 45px}
 .adm-head{position:sticky;top:0;background:color-mix(in srgb,var(--bg) 90%,transparent);backdrop-filter:blur(12px);padding:14px 0;display:flex;justify-content:space-between;align-items:center;z-index:2}
@@ -126,7 +126,7 @@ button,input,textarea,select{font:inherit}
 <details><summary>Yana murojaat yuborsam bo‘ladimi?</summary><p>Ha, istalgan vaqtda yangi murojaat yuborishingiz mumkin. Har bir murojaat alohida raqam oladi.</p></details>
 </div></section>
 </div><div class="pane" id="pane-news"><section class="section"><div class="head"><h2>📢 Aholi bilan ishlash</h2><small>Yangiliklar va bajarilgan ishlar</small></div><div class="feed" id="feed"><div class="empty">Yangiliklar yuklanmoqda...</div></div></section></div><div class="bottom" id="footer">MAHALLA MUROJAAT · Fuqarolar murojaatlari xizmati</div></main>
-<nav class="nav"><button class="on" data-tab="home"><i>🏠</i>Asosiy</button><button data-tab="req"><i>📨</i>Murojaatlar<em class="nav-badge" id="navBadge"></em></button><button data-tab="news"><i>📢</i>Yangiliklar</button><button data-tab="info"><i>📖</i>Ma’lumot</button></nav>
+<nav class="nav"><button class="on" data-tab="home"><i>🏠</i>Asosiy</button><button data-tab="req"><i>📨</i>Murojaatlar<em class="nav-badge" id="navBadge"></em></button><button data-tab="news"><i>📢</i>Yangiliklar</button><button data-tab="info"><i>📖</i>Ma’lumot</button><button id="adminNav" type="button"><i>⚙️</i>Admin panel</button></nav>
 <div class="overlay" id="overlay"><div class="sheet"><div class="sheettop"><h3 id="formTitle">Murojaat yuborish</h3><button class="close" id="close">×</button></div><div id="formArea"><div class="field"><label>Murojaatingiz mazmuni</label><textarea id="body" placeholder="Muammo yoki taklifingizni batafsil yozing..."></textarea></div><div class="field"><label>Telefon raqamingiz</label><input id="phone" type="tel" placeholder="+998 90 123 45 67"></div><div class="field"><label>Yashash manzilingiz</label><input id="address" placeholder="Mahalla, ko‘cha, uy raqami"></div><button class="primary" id="submit">Murojaatni yuborish →</button></div><div class="success hidden" id="success"><div class="check">✓</div><h3>Murojaat yuborildi!</h3><p id="successText"></p><button class="primary" id="finish">Murojaatlarimni ko‘rish</button></div></div></div>
 <script>
 const tg=window.Telegram?.WebApp;tg?.ready();tg?.expand();let selected=null;
@@ -173,7 +173,7 @@ function alertErr(e){alert(e.message||e)}
 async function refresh(){d=await req('/api/admin/overview');render();loadPublic()}
 function go(t){tab=t;document.querySelectorAll('.adm-tab').forEach(b=>b.classList.toggle('on',b.dataset.admTab===t));render()}
 async function open(){try{d=await req('/api/admin/overview');launch.style.display='block';screen.style.display='block';go('admins')}catch(e){alertErr(e)}}
-document.getElementById('admClose').onclick=()=>screen.style.display='none';launch.onclick=open;
+document.getElementById('admClose').onclick=()=>screen.style.display='none';launch.onclick=open;document.getElementById('adminNav').onclick=open;
 document.querySelectorAll('.adm-tab').forEach(b=>b.onclick=()=>go(b.dataset.admTab));
 function app(a,sel){const labels={new:'🆕 Yangi',assigned:'👤 Mas’ulga biriktirildi',contacted:'📞 Aloqaga chiqildi',seen:'👀 Ko‘rib chiqilmoqda',in_progress:'🛠 Jarayonda',done:'✅ Topshirildi'};return '<div class="adm-item"><div class="adm-row"><b>'+(sel?'<input type="checkbox" class="sel-chk" value="'+a.id+'">':'')+'№'+a.id+' · '+safe(a.name)+'</b><span class="status-pill">'+(labels[a.status]||'🆕 Yangi')+'</span></div><small>'+safe(a.date)+'</small><p><b>'+safe(a.category)+'</b><br>'+safe(a.text)+'<br>☎ '+safe(a.phone)+' · 📍 '+safe(a.address)+'</p><div class="status-actions"><button class="adm-btn alt" data-app="'+a.id+'" data-status="assigned">Mas’ulga biriktirildi</button><button class="adm-btn" data-app="'+a.id+'" data-status="contacted">📞 Aloqaga chiqildi</button><button class="adm-btn alt" data-app="'+a.id+'" data-status="seen">Ko‘rildi</button><button class="adm-btn alt" data-app="'+a.id+'" data-status="in_progress">Jarayonda</button><button class="adm-btn" data-app="'+a.id+'" data-status="done">Topshirildi</button></div><div class="reply-row"><textarea class="adm-field" id="reply-'+a.id+'" rows="2" placeholder="Mijozga izoh yoki javob yozing..."></textarea><button class="adm-btn" data-reply="'+a.id+'">💬 Javob yuborish</button></div></div>'}
 function render(){
@@ -230,7 +230,7 @@ root.querySelectorAll('[data-reply]').forEach(b=>b.onclick=async()=>{const id=b.
 }
 function readFile(f){return new Promise((ok,no)=>{if(!f)return ok(null);if(f.size>5*1024*1024)return no(Error('Rasm 5 MB dan kichik bo‘lishi kerak'));let r=new FileReader();r.onload=()=>ok(r.result);r.onerror=no;r.readAsDataURL(f)})}
 function staffForm(k){let p=d.staff.find(x=>x.category===k);document.getElementById('staffEdit').innerHTML='<h3>Xodimni tahrirlash</h3><label class="adm-label">Lavozim / ism</label><input id="stTitle" class="adm-field" value="'+safe(p.title)+'"><label class="adm-label">Izoh</label><textarea id="stDesc" class="adm-field">'+safe(p.description)+'</textarea><label class="adm-label">Rasm</label><input id="stPhoto" type="file" accept="image/*" class="adm-field"><button class="adm-btn" id="stSave">Saqlash</button>';stSave.onclick=async()=>{try{await req('/api/admin/staff','PUT',{category:k,title:stTitle.value,description:stDesc.value,photo_base64:await readFile(stPhoto.files[0])});await refresh();alert('Xodim ma’lumoti saqlandi')}catch(e){alertErr(e)}}}
-if(tg?.initData)req('/api/admin/overview').then(x=>{d=x;launch.style.display='block'}).catch(()=>{});
+if(tg?.initData)req('/api/admin/overview').then(x=>{d=x;launch.style.display='none';document.getElementById('adminNav').style.display='flex'}).catch(()=>{});
 })();
 </script>
 <script>
