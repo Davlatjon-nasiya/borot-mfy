@@ -365,6 +365,64 @@ async def admin_overview(request:Request):
       'staff':staff,'settings':{k:await setting(k,'') for k in ('mfy_name','mfy_address','mfy_phone')},
       'reception':await get_reception(),
       'routing':{'group_id':await setting('group_id',str(GROUP_ID)),'staff_ids':{k:await setting('staff_'+k,str(v[1])) for k,v in CATEGORIES.items()}}}
+@app.get('/api/admin/analytics')
+async def admin_analytics(request:Request):
+    await admin_user(request)
+    totals=await pool.fetchrow("""SELECT COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE status <> 'done') AS pending,
+        COUNT(*) FILTER (WHERE status = 'done') AS done,
+        COUNT(*) FILTER (WHERE status <> 'done' AND created_at <= NOW() - INTERVAL '15 days') AS overdue,
+        AVG(EXTRACT(EPOCH FROM (updated_at-created_at))/86400.0) FILTER (WHERE status='done') AS avg_days
+        FROM arizalar""")
+    rows=await pool.fetch("""SELECT category, COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE status='done') AS done,
+        COUNT(*) FILTER (WHERE status<>'done') AS pending,
+        AVG(EXTRACT(EPOCH FROM (updated_at-created_at))/86400.0) FILTER (WHERE status='done') AS avg_days
+        FROM arizalar GROUP BY category ORDER BY done DESC,total DESC""")
+    names={k:v[0] for k,v in CATEGORIES.items()}
+    return {'total':totals['total'],'pending':totals['pending'],'done':totals['done'],
+        'overdue':totals['overdue'],'avg_days':round(float(totals['avg_days'] or 0),1),
+        'staff':[{'category':r['category'],'name':names.get(r['category'],r['category']),
+            'total':r['total'],'done':r['done'],'pending':r['pending'],
+            'avg_days':round(float(r['avg_days'] or 0),1)} for r in rows]}
+
+@app.get('/api/admin/excel')
+async def admin_excel(request:Request):
+    await admin_user(request)
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from fastapi.responses import StreamingResponse
+    rows=await pool.fetch("""SELECT id,full_name,category,text,phone,address,status,created_at,updated_at
+        FROM arizalar ORDER BY id DESC""")
+    names={k:v[0] for k,v in CATEGORIES.items()}
+    wb=Workbook()
+    ws=wb.active
+    ws.title='Murojaatlar'
+    ws.append(['№','F.I.Sh.','Yo‘nalish','Murojaat mazmuni','Telefon','Manzil','Holat','Kelgan sana','Oxirgi yangilanish'])
+    for cell in ws[1]:
+        cell.font=Font(bold=True,color='FFFFFF')
+        cell.fill=PatternFill('solid',fgColor='0F766E')
+        cell.alignment=Alignment(horizontal='center',vertical='center')
+    labels={'new':'Yangi','assigned':'Mas’ulga biriktirildi','contacted':'Aloqaga chiqildi','seen':'Ko‘rildi','in_progress':'Jarayonda','done':'Hal qilindi'}
+    for r in rows:
+        ws.append([r['id'],r['full_name'] or 'Fuqaro',names.get(r['category'],r['category']),
+            r['text'],r['phone'],r['address'],labels.get(r['status'],r['status']),
+            r['created_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M'),
+            r['updated_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M')])
+    ws.freeze_panes='A2'
+    ws.auto_filter.ref=ws.dimensions
+    for col,width in {'A':8,'B':24,'C':28,'D':55,'E':18,'F':32,'G':24,'H':20,'I':20}.items():
+        ws.column_dimensions[col].width=width
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment=Alignment(vertical='top',wrap_text=True)
+    out=io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    filename='mahalla_murojaatlar_'+datetime.now(TZ).strftime('%Y%m%d_%H%M')+'.xlsx'
+    return StreamingResponse(out,media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition':f'attachment; filename="{filename}"'})
+
 class AdminAdd(BaseModel):
     user_id:str=Field(min_length=1,max_length=24)
 @app.post('/api/admin/admins')
