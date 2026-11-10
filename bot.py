@@ -47,6 +47,9 @@ async def init_db():
    full_name TEXT,username TEXT,category TEXT NOT NULL,text TEXT NOT NULL,phone TEXT NOT NULL,address TEXT NOT NULL,
    status TEXT NOT NULL DEFAULT 'new',dm_msg_id BIGINT,group_msg_id BIGINT,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute('''CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY,value TEXT NOT NULL DEFAULT '')''')
+  await c.execute('''CREATE TABLE IF NOT EXISTS bot_admins (user_id BIGINT PRIMARY KEY, added_by BIGINT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
+  for admin_id in ADMIN_IDS:
+   await c.execute('INSERT INTO bot_admins(user_id) VALUES($1) ON CONFLICT(user_id) DO NOTHING',admin_id)
   await c.execute('''CREATE TABLE IF NOT EXISTS staff_profiles (category TEXT PRIMARY KEY,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',photo BYTEA,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute('''CREATE TABLE IF NOT EXISTS content_posts (id SERIAL PRIMARY KEY,kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',image BYTEA,active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute('''CREATE TABLE IF NOT EXISTS application_comments(id SERIAL PRIMARY KEY,application_id INTEGER NOT NULL REFERENCES arizalar(id) ON DELETE CASCADE,admin_id BIGINT NOT NULL,message TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
@@ -62,7 +65,7 @@ async def init_db():
    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
   await c.execute("INSERT INTO app_settings(key,value) VALUES('mfy_name','MAHALLA MUROJAAT') ON CONFLICT(key) DO NOTHING")
 
-def is_admin(uid): return uid in ADMIN_IDS
+async def is_admin(uid): return bool(await pool.fetchval('SELECT 1 FROM bot_admins WHERE user_id=$1',uid))
 async def staff_id(cat):
  value=await setting('staff_'+cat,str(CATEGORIES.get(cat,('',0))[1]))
  try:return int(value)
@@ -71,7 +74,7 @@ async def is_staff(uid):
  for k in CATEGORIES:
   if await staff_id(k)==uid and uid!=0:return True
  return False
-async def can_view(uid,cat): return is_admin(uid) or await staff_id(cat)==uid
+async def can_view(uid,cat): return await is_admin(uid) or await staff_id(cat)==uid
 async def group_id():
  value=await setting('group_id',str(GROUP_ID))
  try:return int(value)
@@ -102,14 +105,16 @@ async def start(m:Message,state:FSMContext):
  await m.answer(f"Assalomu alaykum! 👋\n\n<b>{html.escape(name)}</b> murojaatlar platformasiga xush kelibsiz. Ariza yuborish uchun pastdagi 📱 Ilovani ochish tugmasini bosing.",reply_markup=home_kb())
 @router.message(Command('admin'))
 async def admin(m:Message):
- if not (is_admin(m.from_user.id) or await is_staff(m.from_user.id)): await m.answer('Sizda admin panelga ruxsat yo‘q.'); return
- await m.answer('🔐 <b>Mahalla boshqaruv paneli</b>\nBo‘limni tanlang:',reply_markup=admin_kb() if is_admin(m.from_user.id) else InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='📊 Mening murojaatlarim',callback_data='adm:mine')]]))
+ admin_flag=await is_admin(m.from_user.id)
+ if not (admin_flag or await is_staff(m.from_user.id)): await m.answer('Sizda admin panelga ruxsat yo‘q.'); return
+ await m.answer('🔐 <b>Mahalla boshqaruv paneli</b>\nBo‘limni tanlang:',reply_markup=admin_kb() if admin_flag else InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='📊 Mening murojaatlarim',callback_data='adm:mine')]]))
 
 @router.callback_query(F.data.startswith('adm:'))
 async def admin_actions(call:CallbackQuery,state:FSMContext):
  uid=call.from_user.id; action=call.data.split(':',1)[1]
- if not (is_admin(uid) or await is_staff(uid)): await call.answer('Ruxsat yo‘q',show_alert=True); return
- if action not in ('mine',) and not is_admin(uid): await call.answer('Bu bo‘lim faqat bosh admin uchun.',show_alert=True); return
+ admin_flag=await is_admin(uid)
+ if not (admin_flag or await is_staff(uid)): await call.answer('Ruxsat yo‘q',show_alert=True); return
+ if action not in ('mine',) and not admin_flag: await call.answer('Bu bo‘lim faqat bosh admin uchun.',show_alert=True); return
  if action=='stats':
   rows=await pool.fetch('SELECT status,COUNT(*) AS n FROM arizalar GROUP BY status'); counts={r['status']:r['n'] for r in rows}; total=sum(counts.values())
   await call.message.answer(f"📊 <b>Umumiy statistika</b>\nJami: {total}\n🆕 Yangi: {counts.get('new',0)}\n👀 Ko‘rilgan: {counts.get('seen',0)}\n✅ Hal qilingan: {counts.get('done',0)}")
@@ -250,7 +255,7 @@ async def application_deadline_worker(bot:Bot):
     WHERE id IN (SELECT id FROM arizalar WHERE status IN ('new','assigned')
      AND first_seen_at IS NULL AND created_at <= NOW() - INTERVAL '15 days' AND escalated_at IS NULL
      FOR UPDATE SKIP LOCKED) RETURNING *""")
-   admins=sorted({int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().lstrip('-').isdigit()})
+   admins=sorted(await pool.fetchval('SELECT COALESCE(array_agg(user_id), ARRAY[]::BIGINT[]) FROM bot_admins'))
    for row in overdue:
     aid=row['id']; alert="🚨 <b>15 KUNLIK MUDDAT O‘TDI!</b>\nMurojaat ko‘rib chiqilmadi. Mas’ul xodimga qayta yuborildi."
     sent=False; staff=await staff_id(row['category'])
