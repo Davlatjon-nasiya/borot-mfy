@@ -92,7 +92,7 @@ async def application_deadline_worker():
                 WHERE id IN (SELECT id FROM arizalar WHERE status IN ('new','assigned')
                   AND first_seen_at IS NULL AND created_at <= NOW() - INTERVAL '15 days' AND escalated_at IS NULL
                   FOR UPDATE SKIP LOCKED) RETURNING *""")
-            admin_ids=sorted({int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().lstrip('-').isdigit()})
+            admin_ids=sorted(await pool.fetchval('SELECT COALESCE(array_agg(user_id), ARRAY[]::BIGINT[]) FROM bot_admins'))
             for row in overdue:
                 aid=row['id']
                 alert=("🚨 <b>15 KUNLIK MUDDAT O‘TDI!</b>\nMurojaat haligacha ko‘rib chiqilmagan. "
