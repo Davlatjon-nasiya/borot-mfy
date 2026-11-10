@@ -165,7 +165,8 @@ async def lifespan(app):
  if pool: await pool.close()
 app=FastAPI(title='Mahalla Murojaat',lifespan=lifespan); app.mount('/static',StaticFiles(directory='static'),name='static')
 @app.get('/')
-async def index(): return FileResponse('static/index.html')
+async def index():
+    return FileResponse('static/index.html', headers={'Cache-Control':'no-store, no-cache, must-revalidate, max-age=0','Pragma':'no-cache','Expires':'0'})
 async def send_database_backup(reason='manual'):
     if not bot: raise RuntimeError('Telegram bot hali ishga tushmagan')
     admin_ids=sorted(await pool.fetchval('SELECT COALESCE(array_agg(user_id), ARRAY[]::BIGINT[]) FROM bot_admins'))
