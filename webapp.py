@@ -132,6 +132,9 @@ async def lifespan(app):
  async with pool.acquire() as c:
   await c.execute('''CREATE TABLE IF NOT EXISTS arizalar (id SERIAL PRIMARY KEY,mahalla_id INTEGER NOT NULL DEFAULT 1,user_id BIGINT NOT NULL,full_name TEXT,username TEXT,category TEXT NOT NULL,text TEXT NOT NULL,phone TEXT NOT NULL,address TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'new',dm_msg_id BIGINT,group_msg_id BIGINT,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute('''CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL DEFAULT '')''')
+  await c.execute('''CREATE TABLE IF NOT EXISTS bot_admins (user_id BIGINT PRIMARY KEY, added_by BIGINT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
+  for admin_id in {int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().isdigit()}:
+   await c.execute('INSERT INTO bot_admins(user_id) VALUES($1) ON CONFLICT(user_id) DO NOTHING',admin_id)
   await c.execute('''CREATE TABLE IF NOT EXISTS staff_profiles(category TEXT PRIMARY KEY,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',photo BYTEA,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute('''CREATE TABLE IF NOT EXISTS content_posts(id SERIAL PRIMARY KEY,kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',image BYTEA,active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
   await c.execute('''CREATE TABLE IF NOT EXISTS application_comments(id SERIAL PRIMARY KEY,application_id INTEGER NOT NULL REFERENCES arizalar(id) ON DELETE CASCADE,admin_id BIGINT NOT NULL,message TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
@@ -165,8 +168,8 @@ app=FastAPI(title='Mahalla Murojaat',lifespan=lifespan); app.mount('/static',Sta
 async def index(): return FileResponse('static/index.html')
 async def send_database_backup(reason='manual'):
     if not bot: raise RuntimeError('Telegram bot hali ishga tushmagan')
-    admin_ids=sorted({int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().lstrip('-').isdigit()})
-    if not admin_ids: raise RuntimeError('ADMIN_IDS sozlanmagan: backup yuborish uchun admin Telegram ID kerak')
+    admin_ids=sorted(await pool.fetchval('SELECT COALESCE(array_agg(user_id), ARRAY[]::BIGINT[]) FROM bot_admins'))
+    if not admin_ids: raise RuntimeError('Adminlar ro‘yxati bo‘sh: backup yuborish uchun admin qo‘shing')
     tables=('arizalar','app_settings','staff_profiles','content_posts','application_comments','application_status_history')
     snapshot={'format':'mahalla-murojaat-db-backup-v1','created_at':datetime.now(TZ).isoformat(),'reason':reason,'tables':{}}
     for table in tables:
@@ -248,10 +251,10 @@ async def submit(payload:Application,request:Request):
 
 
 # ---------------------------------------------------------------- Admin API (Telegram Mini App)
-def admin_user(request: Request):
+async def admin_user(request: Request):
     user=verify_init_data(request.headers.get('X-Telegram-Init-Data',''))
-    ids={int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().isdigit()}
-    if int(user.get('id',0)) not in ids: raise HTTPException(403,'Admin huquqi mavjud emas.')
+    allowed=await pool.fetchval('SELECT 1 FROM bot_admins WHERE user_id=$1',int(user.get('id',0)))
+    if not allowed: raise HTTPException(403,'Admin huquqi mavjud emas.')
     return user
 class AdminSettings(BaseModel):
     mfy_name:str=Field(min_length=2,max_length=120)
@@ -284,7 +287,7 @@ def decode_photo(value):
     return data
 @app.post('/api/admin/backup')
 async def admin_backup(request:Request):
-    admin_user(request)
+    await admin_user(request)
     try:return await send_database_backup('admin-panel')
     except Exception as e:
         logging.exception('Qo‘lda backup xatosi')
@@ -295,7 +298,7 @@ class AdminRestore(BaseModel):
 
 @app.post('/api/admin/restore')
 async def admin_restore(payload:AdminRestore,request:Request):
-    admin_user(request)
+    await admin_user(request)
     try:
         raw=base64.b64decode(payload.backup_base64,validate=True)
         if len(raw)>20*1024*1024:
@@ -347,22 +350,45 @@ async def admin_restore(payload:AdminRestore,request:Request):
 
 @app.get('/api/admin/overview')
 async def admin_overview(request:Request):
-    admin_user(request)
+    await admin_user(request)
     stats=await pool.fetch('SELECT status,COUNT(*) AS n FROM arizalar GROUP BY status')
     apps=await pool.fetch('SELECT id,full_name,category,text,phone,address,status,created_at FROM arizalar ORDER BY id DESC LIMIT 100')
     posts=await pool.fetch('SELECT id,kind,title,body,active,(image IS NOT NULL) AS has_image,created_at FROM content_posts ORDER BY id DESC LIMIT 100')
     profiles=await pool.fetch('SELECT category,title,description,(photo IS NOT NULL) AS has_photo FROM staff_profiles')
     pm={r['category']:r for r in profiles}
     staff=[{'category':k,'title':pm[k]['title'] if k in pm else v[0],'description':pm[k]['description'] if k in pm else '', 'has_photo':bool(pm[k]['has_photo']) if k in pm else False} for k,v in CATEGORIES.items()]
-    return {'stats':{r['status']:r['n'] for r in stats},
+    admins=await pool.fetch('SELECT user_id,created_at FROM bot_admins ORDER BY created_at ASC')
+    return {'admins':[{'user_id':str(r['user_id']),'created_at':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y')} for r in admins],
+      'stats':{r['status']:r['n'] for r in stats},
       'applications':[{'id':r['id'],'name':r['full_name'] or 'Fuqaro','category':CATEGORIES.get(r['category'],(r['category'],0))[0],'text':r['text'],'phone':r['phone'],'address':r['address'],'status':r['status'],'date':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M')} for r in apps],
       'posts':[{'id':r['id'],'kind':r['kind'],'title':r['title'],'body':r['body'],'active':r['active'],'date':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y')} for r in posts],
       'staff':staff,'settings':{k:await setting(k,'') for k in ('mfy_name','mfy_address','mfy_phone')},
       'reception':await get_reception(),
       'routing':{'group_id':await setting('group_id',str(GROUP_ID)),'staff_ids':{k:await setting('staff_'+k,str(v[1])) for k,v in CATEGORIES.items()}}}
+class AdminAdd(BaseModel):
+    user_id:str=Field(min_length=1,max_length=24)
+@app.post('/api/admin/admins')
+async def admin_add(payload:AdminAdd,request:Request):
+    actor=await admin_user(request)
+    raw=payload.user_id.strip()
+    if not raw.isdigit() or int(raw)<=0: raise HTTPException(400,'Telegram ID musbat raqam bo‘lishi kerak.')
+    uid=int(raw)
+    result=await pool.execute('INSERT INTO bot_admins(user_id,added_by) VALUES($1,$2) ON CONFLICT(user_id) DO NOTHING',uid,int(actor['id']))
+    if result=='INSERT 0 0': raise HTTPException(409,'Bu foydalanuvchi allaqachon admin.')
+    return {'ok':True,'user_id':str(uid)}
+@app.delete('/api/admin/admins/{user_id}')
+async def admin_remove(user_id:int,request:Request):
+    actor=await admin_user(request)
+    total=await pool.fetchval('SELECT COUNT(*) FROM bot_admins')
+    if total<=1: raise HTTPException(400,'Oxirgi adminni o‘chirib bo‘lmaydi.')
+    if user_id==int(actor['id']): raise HTTPException(400,'O‘zingizni adminlar ro‘yxatidan o‘chira olmaysiz.')
+    result=await pool.execute('DELETE FROM bot_admins WHERE user_id=$1',user_id)
+    if result=='DELETE 0': raise HTTPException(404,'Admin topilmadi.')
+    return {'ok':True}
+
 @app.put('/api/admin/settings')
 async def admin_settings(p:AdminSettings,request:Request):
-    admin_user(request)
+    await admin_user(request)
     values=p.model_dump()
     key_map={'group_id':'group_id','uchastkavoy_id':'staff_uchastkavoy','rais_id':'staff_rais','hokim_yordamchi_id':'staff_hokim_yordamchi','yoshlar_id':'staff_yoshlar','xotin_qizlar_id':'staff_xotin_qizlar','ijtimoiy_id':'staff_ijtimoiy','soliq_id':'staff_soliq'}
     for k,v in values.items():
@@ -373,7 +399,7 @@ async def admin_settings(p:AdminSettings,request:Request):
     return {'ok':True}
 @app.put('/api/admin/staff')
 async def admin_staff(p:AdminStaff,request:Request):
-    admin_user(request)
+    await admin_user(request)
     if p.category not in CATEGORIES: raise HTTPException(400,'Xodim topilmadi.')
     photo=decode_photo(p.photo_base64)
     if photo is None:
@@ -391,20 +417,20 @@ class AdminReception(BaseModel):
     items:list[ReceptionItem]=Field(max_length=30)
 @app.put('/api/admin/reception')
 async def admin_reception(p:AdminReception,request:Request):
-    admin_user(request)
+    await admin_user(request)
     data=[{'name':x.name.strip(),'days':x.days.strip(),'hours':x.hours.strip()} for x in p.items if x.name.strip()]
     await pool.execute('INSERT INTO app_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value','reception',json.dumps(data,ensure_ascii=False))
     return {'ok':True}
 
 @app.post('/api/admin/posts')
 async def admin_post_create(p:AdminPost,request:Request):
-    admin_user(request)
+    await admin_user(request)
     if p.kind not in ('ad','post'): raise HTTPException(400,'Material turi noto‘g‘ri.')
     row=await pool.fetchrow('INSERT INTO content_posts(kind,title,body,image,active) VALUES($1,$2,$3,$4,$5) RETURNING id',p.kind,p.title.strip(),p.body.strip(),decode_photo(p.photo_base64),p.active)
     return {'ok':True,'id':row['id']}
 @app.put('/api/admin/posts/{pid}')
 async def admin_post_update(pid:int,p:AdminPost,request:Request):
-    admin_user(request)
+    await admin_user(request)
     if p.kind not in ('ad','post'): raise HTTPException(400,'Material turi noto‘g‘ri.')
     if not await pool.fetchval('SELECT id FROM content_posts WHERE id=$1',pid): raise HTTPException(404,'Material topilmadi.')
     photo=decode_photo(p.photo_base64)
@@ -413,7 +439,7 @@ async def admin_post_update(pid:int,p:AdminPost,request:Request):
     return {'ok':True}
 @app.delete('/api/admin/posts/{pid}')
 async def admin_post_delete(pid:int,request:Request):
-    admin_user(request)
+    await admin_user(request)
     res=await pool.execute('DELETE FROM content_posts WHERE id=$1',pid)
     if res=='DELETE 0': raise HTTPException(404,'Material topilmadi.')
     return {'ok':True}
@@ -422,7 +448,7 @@ class AdminComment(BaseModel):
 
 @app.post('/api/admin/applications/{aid}/comments')
 async def admin_application_comment(aid:int,payload:AdminComment,request:Request):
-    user=admin_user(request)
+    user=await admin_user(request)
     row=await pool.fetchrow('SELECT user_id FROM arizalar WHERE id=$1',aid)
     if not row: raise HTTPException(404,'Murojaat topilmadi.')
     message=payload.message.strip()
@@ -436,7 +462,7 @@ async def admin_application_comment(aid:int,payload:AdminComment,request:Request
 
 @app.patch('/api/admin/applications/{aid}')
 async def admin_app_status(aid:int,payload:dict,request:Request):
-    actor=admin_user(request); status=payload.get('status')
+    actor=await admin_user(request); status=payload.get('status')
     if status not in ('new','assigned','contacted','seen','in_progress','done'): raise HTTPException(400,'Holat noto‘g‘ri.')
     old=await pool.fetchrow('SELECT status FROM arizalar WHERE id=$1',aid)
     if not old: raise HTTPException(404,'Murojaat topilmadi.')
@@ -453,7 +479,7 @@ class AdminDeleteApps(BaseModel):
 
 @app.post('/api/admin/applications/delete')
 async def admin_apps_delete(payload:AdminDeleteApps,request:Request):
-    admin_user(request)
+    await admin_user(request)
     ids=list(set(payload.ids))
     rows=await pool.fetch('DELETE FROM arizalar WHERE id=ANY($1::int[]) RETURNING id,category,dm_msg_id,group_msg_id',ids)
     target_group=await routing_id('group_id',GROUP_ID)
