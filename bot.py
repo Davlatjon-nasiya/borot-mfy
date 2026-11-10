@@ -9,7 +9,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
-                           KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, WebAppInfo, MenuButtonWebApp)
+                           KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, WebAppInfo, MenuButtonWebApp, BufferedInputFile)
+from openpyxl import Workbook
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
 
@@ -90,7 +91,7 @@ def status_kb(aid):
 def admin_kb():
  kb=InlineKeyboardBuilder()
  for title,data in [
-  ('📊 Statistika','adm:stats'),('📨 Barcha murojaatlar','adm:latest'),('🆕 Yangi murojaatlar','adm:new'),
+  ('📊 Statistika','adm:stats'),('🧭 Rahbar paneli','adm:leader'),('🏆 Xodimlar reytingi','adm:rating'),('📥 Excel hisobot','adm:excel'),('📨 Barcha murojaatlar','adm:latest'),('🆕 Yangi murojaatlar','adm:new'),
   ('👥 Xodimlar va rasmlari','adm:staff'),('🏷 MFY ma’lumotlari','adm:mfy'),('📢 Reklama boshqaruvi','adm:ads'),
   ('📰 Aholi bilan ishlar / yangiliklar','adm:posts'),('➕ Reklama qo‘shish','adm:add_ad'),('➕ Tadbir yoki bajarilgan ish qo‘shish','adm:add_post')]: kb.button(text=title,callback_data=data)
  kb.adjust(1); return kb.as_markup()
@@ -120,7 +121,33 @@ async def admin_actions(call:CallbackQuery,state:FSMContext):
  if action not in ('mine',) and not admin_flag: await call.answer('Bu bo‘lim faqat bosh admin uchun.',show_alert=True); return
  if action=='stats':
   rows=await pool.fetch('SELECT status,COUNT(*) AS n FROM arizalar GROUP BY status'); counts={r['status']:r['n'] for r in rows}; total=sum(counts.values())
-  await call.message.answer(f"📊 <b>Umumiy statistika</b>\nJami: {total}\n🆕 Yangi: {counts.get('new',0)}\n👀 Ko‘rilgan: {counts.get('seen',0)}\n✅ Hal qilingan: {counts.get('done',0)}")
+  overdue=await pool.fetchval("SELECT COUNT(*) FROM arizalar WHERE status NOT IN ('done') AND created_at <= NOW()-INTERVAL '15 days'") or 0
+  await call.message.answer(f"📊 <b>Umumiy statistika</b>\\nJami: {total}\\n🆕 Yangi: {counts.get('new',0)}\\n👤 Biriktirilgan: {counts.get('assigned',0)}\\n👀 Ko‘rilayotgan: {counts.get('seen',0)}\\n🛠 Jarayonda: {counts.get('in_progress',0)}\\n✅ Hal qilingan: {counts.get('done',0)}\\n🚨 15 kundan oshgan: {overdue}")
+ elif action=='leader':
+  rows=await pool.fetch('SELECT status,COUNT(*) AS n FROM arizalar GROUP BY status'); counts={r['status']:r['n'] for r in rows}; total=sum(counts.values())
+  pending=counts.get('new',0)+counts.get('assigned',0)+counts.get('contacted',0)+counts.get('seen',0)+counts.get('in_progress',0)
+  overdue=await pool.fetchval("SELECT COUNT(*) FROM arizalar WHERE status!='done' AND created_at <= NOW()-INTERVAL '15 days'") or 0
+  avg_days=await pool.fetchval("SELECT ROUND(AVG(EXTRACT(EPOCH FROM (updated_at-created_at))/86400)::numeric,1) FROM arizalar WHERE status='done'") or 0
+  by_cat=await pool.fetch("SELECT category,COUNT(*) AS total,COUNT(*) FILTER(WHERE status='done') AS done FROM arizalar GROUP BY category ORDER BY total DESC")
+  lines='\\n'.join(f"• {html.escape(CATEGORIES.get(r['category'],(r['category'],0))[0])}: {r['done']}/{r['total']} hal qilindi" for r in by_cat) or 'Hozircha murojaat yo‘q'
+  await call.message.answer(f"🧭 <b>RAHBAR PANELI</b>\\n\\n📨 Jami: <b>{total}</b>\\n⏳ Ochiq: <b>{pending}</b>\\n✅ Hal qilingan: <b>{counts.get('done',0)}</b>\\n🚨 15 kundan oshgan: <b>{overdue}</b>\\n⏱ Hal qilish o‘rtachasi: <b>{avg_days} kun</b>\\n\\n<b>Yo‘nalishlar kesimida:</b>\\n{lines}")
+ elif action=='rating':
+  rows=await pool.fetch("SELECT category,COUNT(*) FILTER(WHERE status='done') AS done,COUNT(*) AS total,ROUND(AVG(EXTRACT(EPOCH FROM (updated_at-created_at))/86400) FILTER(WHERE status='done')::numeric,1) AS avg_days FROM arizalar GROUP BY category ORDER BY done DESC,total DESC")
+  lines=[]
+  for i,r in enumerate(rows,1):
+   title=CATEGORIES.get(r['category'],(r['category'],0))[0]
+   lines.append(f"{i}. {html.escape(title)} — ✅ {r['done']} ta / jami {r['total']} ta / o‘rtacha {r['avg_days'] or 0} kun")
+  await call.message.answer("🏆 <b>XODIMLAR REYTINGI</b>\\n\\n"+('\\n'.join(lines) if lines else 'Hozircha ma’lumot yo‘q'))
+ elif action=='excel':
+  rows=await pool.fetch("SELECT id,full_name,username,category,text,phone,address,status,created_at,updated_at FROM arizalar ORDER BY id DESC LIMIT 10000")
+  wb=Workbook(); ws=wb.active; ws.title='Murojaatlar'
+  ws.append(['ID','F.I.Sh.','Telegram','Mas’ul yo‘nalish','Murojaat','Telefon','Manzil','Holat','Yuborilgan vaqt','Oxirgi yangilanish'])
+  for r in rows:
+   ws.append([r['id'],r['full_name'] or '',r['username'] or '',CATEGORIES.get(r['category'],(r['category'],0))[0],r['text'],r['phone'],r['address'],STATUS.get(r['status'],r['status']),r['created_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M') if r['created_at'] else '',r['updated_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M') if r['updated_at'] else ''])
+  ws.freeze_panes='A2'; ws.auto_filter.ref=ws.dimensions
+  for col,width in {'A':8,'B':24,'C':20,'D':28,'E':55,'F':18,'G':35,'H':25,'I':22,'J':22}.items(): ws.column_dimensions[col].width=width
+  output=io.BytesIO(); wb.save(output); output.seek(0)
+  await call.message.answer_document(BufferedInputFile(output.getvalue(),filename='mahalla_murojaatlar_hisoboti.xlsx'),caption=f"📊 Excel hisobot: {len(rows)} ta murojaat")
  elif action in ('latest','new','mine'):
   where="WHERE status='new'" if action=='new' else ''; rows=await pool.fetch(f'SELECT * FROM arizalar {where} ORDER BY id DESC LIMIT 30'); shown=0
   for r in rows:
