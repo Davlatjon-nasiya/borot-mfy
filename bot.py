@@ -234,8 +234,8 @@ async def edit_content_skip_photo(m:Message,state:FSMContext):
 async def application_deadline_worker(bot:Bot):
  # Murojaatni mas'ul xodim ko'rmagan bo'lsa, 5/10/15/18-kunlarda nazorat.
  steps=(
-  (5,'reminder_5_sent','⏰ <b>5 KUNLIK ESLATMA</b>\\nSizga biriktirilgan murojaat hali ko‘rib chiqilmadi. Iltimos, murojaatni ochib, holatini belgilang.'),
-  (10,'reminder_10_sent','⚠️ <b>10 KUNLIK OGOHLANTIRISH</b>\\nMurojaat 10 kundan beri ko‘rib chiqilmadi. 15 kunlik muddat tugashidan oldin choralar ko‘ring.')
+  (5,'reminder_5_sent','⏰ <b>5 KUNLIK ESLATMA</b>\nSizga biriktirilgan murojaat hali ko‘rib chiqilmadi. Iltimos, murojaatni ochib, holatini belgilang.'),
+  (10,'reminder_10_sent','⚠️ <b>10 KUNLIK OGOHLANTIRISH</b>\nMurojaat 10 kundan beri ko‘rib chiqilmadi. 15 kunlik muddat tugashidan oldin choralar ko‘ring.')
  )
  while True:
   try:
@@ -251,8 +251,8 @@ async def application_deadline_worker(bot:Bot):
       await pool.execute(f"UPDATE arizalar SET {column}=FALSE WHERE id=$1",row['id'])
       continue
      try:
-      await bot.send_message(staff,f"{message}\\n\\n📩 <b>Murojaat №{row['id']}</b>\\n"
-       f"📝 {html.escape(row['text'][:700])}\\n📞 {html.escape(row['phone'])}\\n"
+      await bot.send_message(staff,f"{message}\n\n📩 <b>Murojaat №{row['id']}</b>\n"
+       f"📝 {html.escape(row['text'][:700])}\n📞 {html.escape(row['phone'])}\n"
        f"📍 {html.escape(row['address'])}",reply_markup=status_kb(row['id']))
      except Exception:
       logging.exception("Murojaat eslatmasi yuborilmadi: %s",row['id'])
@@ -267,23 +267,23 @@ async def application_deadline_worker(bot:Bot):
    admins=await pool.fetch("SELECT user_id FROM bot_admins ORDER BY user_id")
    for row in overdue:
     aid=row['id']
-    alert="🚨 <b>15 KUNLIK MUDDAT O‘TDI!</b>\\nMurojaat hali mas'ul xodim tomonidan ko‘rilmagan."
+    alert="🚨 <b>15 KUNLIK MUDDAT O‘TDI!</b>\nMurojaat hali mas'ul xodim tomonidan ko‘rilmagan."
     sent=False
     staff=await staff_id(row['category'])
     if staff:
      try:
-      await bot.send_message(staff,f"{alert}\\n🔁 Murojaat qayta yuborildi.\\n\\n"
-       f"📩 <b>Ariza №{aid}</b>\\n📝 {html.escape(row['text'][:700])}\\n"
-       f"📞 {html.escape(row['phone'])}\\n📍 {html.escape(row['address'])}",
+      await bot.send_message(staff,f"{alert}\n🔁 Murojaat qayta yuborildi.\n\n"
+       f"📩 <b>Ariza №{aid}</b>\n📝 {html.escape(row['text'][:700])}\n"
+       f"📞 {html.escape(row['phone'])}\n📍 {html.escape(row['address'])}",
        reply_markup=status_kb(aid))
       sent=True
      except Exception:
       logging.exception("15 kunlik qayta yuborish xatosi: %s",aid)
     for admin_row in admins:
      try:
-      await bot.send_message(admin_row['user_id'],f"{alert}\\n"
-       f"👤 {html.escape(row['full_name'] or 'Fuqaro')}\\n📩 Ariza №{aid}\\n"
-       f"📂 {CATEGORIES.get(row['category'],(row['category'],0))[0]}\\n"
+      await bot.send_message(admin_row['user_id'],f"{alert}\n"
+       f"👤 {html.escape(row['full_name'] or 'Fuqaro')}\n📩 Ariza №{aid}\n"
+       f"📂 {CATEGORIES.get(row['category'],(row['category'],0))[0]}\n"
        f"📞 {html.escape(row['phone'])}",reply_markup=status_kb(aid))
       sent=True
      except Exception:
@@ -291,7 +291,7 @@ async def application_deadline_worker(bot:Bot):
     gid=await group_id()
     if gid:
      try:
-      await bot.send_message(gid,f"{alert}\\n📩 Ariza №{aid}",reply_markup=status_kb(aid))
+      await bot.send_message(gid,f"{alert}\n📩 Ariza №{aid}",reply_markup=status_kb(aid))
       sent=True
      except Exception:
       logging.exception("15 kunlik guruh ogohlantirishi yuborilmadi: %s",aid)
@@ -307,12 +307,12 @@ async def application_deadline_worker(bot:Bot):
      FOR UPDATE SKIP LOCKED) RETURNING *""")
    for row in final_rows:
     aid=row['id']; sent=False
-    alert="🛑 <b>18 KUNLIK YUQORI NAZORAT</b>\\nMurojaat 18 kundan beri ko‘rib chiqilmagan. Zudlik bilan nazoratga oling."
+    alert="🛑 <b>18 KUNLIK YUQORI NAZORAT</b>\nMurojaat 18 kundan beri ko‘rib chiqilmagan. Zudlik bilan nazoratga oling."
     for admin_row in admins:
      try:
-      await bot.send_message(admin_row['user_id'],f"{alert}\\n📩 <b>Ariza №{aid}</b>\\n"
-       f"👤 {html.escape(row['full_name'] or 'Fuqaro')}\\n"
-       f"📂 {CATEGORIES.get(row['category'],(row['category'],0))[0]}\\n"
+      await bot.send_message(admin_row['user_id'],f"{alert}\n📩 <b>Ariza №{aid}</b>\n"
+       f"👤 {html.escape(row['full_name'] or 'Fuqaro')}\n"
+       f"📂 {CATEGORIES.get(row['category'],(row['category'],0))[0]}\n"
        f"📞 {html.escape(row['phone'])}",reply_markup=status_kb(aid))
       sent=True
      except Exception:
@@ -320,7 +320,7 @@ async def application_deadline_worker(bot:Bot):
     gid=await group_id()
     if gid:
      try:
-      await bot.send_message(gid,f"{alert}\\n📩 Ariza №{aid}",reply_markup=status_kb(aid))
+      await bot.send_message(gid,f"{alert}\n📩 Ariza №{aid}",reply_markup=status_kb(aid))
       sent=True
      except Exception:
       logging.exception("18 kunlik guruh ogohlantirishi yuborilmadi: %s",aid)
