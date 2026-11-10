@@ -57,6 +57,9 @@ async def init_db():
   await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS reminder_7_sent BOOLEAN NOT NULL DEFAULT FALSE")
   await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS reminder_12_sent BOOLEAN NOT NULL DEFAULT FALSE")
   await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS escalated_at TIMESTAMPTZ")
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS reminder_5_sent BOOLEAN NOT NULL DEFAULT FALSE")
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS reminder_10_sent BOOLEAN NOT NULL DEFAULT FALSE")
+  await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS escalated_18_sent BOOLEAN NOT NULL DEFAULT FALSE")
   await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMPTZ")
   await c.execute("ALTER TABLE arizalar ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
   await c.execute("""CREATE TABLE IF NOT EXISTS application_status_history(
@@ -229,57 +232,104 @@ async def edit_content_skip_photo(m:Message,state:FSMContext):
  await state.clear(); await m.answer('✅ Material matni yangilandi, avvalgi rasm saqlandi.')
 
 async def application_deadline_worker(bot:Bot):
- steps=((3,'reminder_3_sent','⏰ <b>3 KUNLIK ESLATMA</b>\nMurojaat hali ko‘rib chiqilmagan. Iltimos, holatini yangilang.'),
-        (7,'reminder_7_sent','⚠️ <b>7 KUNLIK ESLATMA</b>\nMurojaat bo‘yicha hali javob qayd etilmagan. Zudlik bilan ko‘rib chiqing.'),
-        (12,'reminder_12_sent','🚨 <b>12 KUNLIK OGOHLANTIRISH</b>\n15 kunlik muddat tugashiga 3 kun qoldi. Murojaatni ko‘rib chiqing.'))
+ # Murojaatni mas'ul xodim ko'rmagan bo'lsa, 5/10/15/18-kunlarda nazorat.
+ steps=(
+  (5,'reminder_5_sent','⏰ <b>5 KUNLIK ESLATMA</b>\\nSizga biriktirilgan murojaat hali ko‘rib chiqilmadi. Iltimos, murojaatni ochib, holatini belgilang.'),
+  (10,'reminder_10_sent','⚠️ <b>10 KUNLIK OGOHLANTIRISH</b>\\nMurojaat 10 kundan beri ko‘rib chiqilmadi. 15 kunlik muddat tugashidan oldin choralar ko‘ring.')
+ )
  while True:
   try:
    for days,column,message in steps:
     rows=await pool.fetch(f"""UPDATE arizalar SET {column}=TRUE
-      WHERE id IN (SELECT id FROM arizalar WHERE status IN ('new','assigned')
-       AND first_seen_at IS NULL AND created_at <= NOW() - ($1 * INTERVAL '1 day') AND {column}=FALSE
+      WHERE id IN (SELECT id FROM arizalar
+       WHERE status IN ('new','assigned') AND first_seen_at IS NULL
+       AND created_at <= NOW() - ($1 * INTERVAL '1 day') AND {column}=FALSE
        FOR UPDATE SKIP LOCKED) RETURNING *""",days)
     for row in rows:
      staff=await staff_id(row['category'])
-     if staff:
-      try:
-       await bot.send_message(staff,f"{message}\n\n📩 <b>Murojaat №{row['id']}</b>\n"
-        f"📝 {html.escape(row['text'][:700])}\n📞 {html.escape(row['phone'])}\n"
-        f"📍 {html.escape(row['address'])}",reply_markup=status_kb(row['id']))
-      except Exception:
-       logging.exception("Muddat eslatmasi yuborilmadi: %s",row['id'])
-       await pool.execute(f"UPDATE arizalar SET {column}=FALSE WHERE id=$1",row['id'])
-     else:
+     if not staff:
       await pool.execute(f"UPDATE arizalar SET {column}=FALSE WHERE id=$1",row['id'])
+      continue
+     try:
+      await bot.send_message(staff,f"{message}\\n\\n📩 <b>Murojaat №{row['id']}</b>\\n"
+       f"📝 {html.escape(row['text'][:700])}\\n📞 {html.escape(row['phone'])}\\n"
+       f"📍 {html.escape(row['address'])}",reply_markup=status_kb(row['id']))
+     except Exception:
+      logging.exception("Murojaat eslatmasi yuborilmadi: %s",row['id'])
+      await pool.execute(f"UPDATE arizalar SET {column}=FALSE WHERE id=$1",row['id'])
+
+   # 15-kun: mas'ulga murojaat qayta yuboriladi, rahbar va umumiy guruh ogohlantiriladi.
    overdue=await pool.fetch("""UPDATE arizalar SET escalated_at=NOW()
-    WHERE id IN (SELECT id FROM arizalar WHERE status IN ('new','assigned')
-     AND first_seen_at IS NULL AND created_at <= NOW() - INTERVAL '15 days' AND escalated_at IS NULL
+    WHERE id IN (SELECT id FROM arizalar
+     WHERE status IN ('new','assigned') AND first_seen_at IS NULL
+     AND created_at <= NOW() - INTERVAL '15 days' AND escalated_at IS NULL
      FOR UPDATE SKIP LOCKED) RETURNING *""")
-   admins=sorted(await pool.fetchval('SELECT COALESCE(array_agg(user_id), ARRAY[]::BIGINT[]) FROM bot_admins'))
+   admins=await pool.fetch("SELECT user_id FROM bot_admins ORDER BY user_id")
    for row in overdue:
-    aid=row['id']; alert="🚨 <b>15 KUNLIK MUDDAT O‘TDI!</b>\nMurojaat ko‘rib chiqilmadi. Mas’ul xodimga qayta yuborildi."
-    sent=False; staff=await staff_id(row['category'])
+    aid=row['id']
+    alert="🚨 <b>15 KUNLIK MUDDAT O‘TDI!</b>\\nMurojaat hali mas'ul xodim tomonidan ko‘rilmagan."
+    sent=False
+    staff=await staff_id(row['category'])
     if staff:
      try:
-      await bot.send_message(staff,f"{alert}\n\n📩 <b>Ariza №{aid}</b>\n"
-       f"📝 {html.escape(row['text'][:700])}\n📞 {html.escape(row['phone'])}\n"
-       f"📍 {html.escape(row['address'])}",reply_markup=status_kb(aid)); sent=True
-     except Exception: logging.exception("15 kunlik qayta yuborish xatosi: %s",aid)
-    for admin_id in admins:
+      await bot.send_message(staff,f"{alert}\\n🔁 Murojaat qayta yuborildi.\\n\\n"
+       f"📩 <b>Ariza №{aid}</b>\\n📝 {html.escape(row['text'][:700])}\\n"
+       f"📞 {html.escape(row['phone'])}\\n📍 {html.escape(row['address'])}",
+       reply_markup=status_kb(aid))
+      sent=True
+     except Exception:
+      logging.exception("15 kunlik qayta yuborish xatosi: %s",aid)
+    for admin_row in admins:
      try:
-      await bot.send_message(admin_id,f"{alert}\n📩 Ariza №{aid}\n"
-       f"👤 {html.escape(row['full_name'] or 'Fuqaro')}\n"
-       f"📂 {CATEGORIES.get(row['category'],(row['category'],0))[0]}\n"
-       f"📞 {html.escape(row['phone'])}",reply_markup=status_kb(aid)); sent=True
-     except Exception: logging.exception("15 kunlik admin ogohlantirishi yuborilmadi")
+      await bot.send_message(admin_row['user_id'],f"{alert}\\n"
+       f"👤 {html.escape(row['full_name'] or 'Fuqaro')}\\n📩 Ariza №{aid}\\n"
+       f"📂 {CATEGORIES.get(row['category'],(row['category'],0))[0]}\\n"
+       f"📞 {html.escape(row['phone'])}",reply_markup=status_kb(aid))
+      sent=True
+     except Exception:
+      logging.exception("15 kunlik rahbar ogohlantirishi yuborilmadi: %s",aid)
     gid=await group_id()
     if gid:
      try:
-      await bot.send_message(gid,f"{alert}\n📩 Ariza №{aid}",reply_markup=status_kb(aid)); sent=True
-     except Exception: logging.exception("15 kunlik guruh ogohlantirishi yuborilmadi")
-    if not sent: await pool.execute("UPDATE arizalar SET escalated_at=NULL WHERE id=$1",aid)
-  except asyncio.CancelledError: raise
-  except Exception: logging.exception("Arizalar muddat nazorati xatosi")
+      await bot.send_message(gid,f"{alert}\\n📩 Ariza №{aid}",reply_markup=status_kb(aid))
+      sent=True
+     except Exception:
+      logging.exception("15 kunlik guruh ogohlantirishi yuborilmadi: %s",aid)
+    if not sent:
+     await pool.execute("UPDATE arizalar SET escalated_at=NULL WHERE id=$1",aid)
+
+   # 18-kun: hanuz ko'rilmagan murojaat bo'yicha rahbarlarga takroriy nazorat.
+   final_rows=await pool.fetch("""UPDATE arizalar SET escalated_18_sent=TRUE
+    WHERE id IN (SELECT id FROM arizalar
+     WHERE status IN ('new','assigned') AND first_seen_at IS NULL
+     AND escalated_at IS NOT NULL AND escalated_18_sent=FALSE
+     AND created_at <= NOW() - INTERVAL '18 days'
+     FOR UPDATE SKIP LOCKED) RETURNING *""")
+   for row in final_rows:
+    aid=row['id']; sent=False
+    alert="🛑 <b>18 KUNLIK YUQORI NAZORAT</b>\\nMurojaat 18 kundan beri ko‘rib chiqilmagan. Zudlik bilan nazoratga oling."
+    for admin_row in admins:
+     try:
+      await bot.send_message(admin_row['user_id'],f"{alert}\\n📩 <b>Ariza №{aid}</b>\\n"
+       f"👤 {html.escape(row['full_name'] or 'Fuqaro')}\\n"
+       f"📂 {CATEGORIES.get(row['category'],(row['category'],0))[0]}\\n"
+       f"📞 {html.escape(row['phone'])}",reply_markup=status_kb(aid))
+      sent=True
+     except Exception:
+      logging.exception("18 kunlik yuqori nazorat xabari yuborilmadi: %s",aid)
+    gid=await group_id()
+    if gid:
+     try:
+      await bot.send_message(gid,f"{alert}\\n📩 Ariza №{aid}",reply_markup=status_kb(aid))
+      sent=True
+     except Exception:
+      logging.exception("18 kunlik guruh ogohlantirishi yuborilmadi: %s",aid)
+    if not sent:
+     await pool.execute("UPDATE arizalar SET escalated_18_sent=FALSE WHERE id=$1",aid)
+  except asyncio.CancelledError:
+   raise
+  except Exception:
+   logging.exception("Arizalar muddat nazorati xatosi")
   await asyncio.sleep(3600)
 
 @router.callback_query(F.data.startswith('st:'))
