@@ -17,6 +17,9 @@ TZ=timezone(timedelta(hours=5)); pool=None; bot=None
 DEADLINE_DAYS=int(os.getenv('DEADLINE_DAYS','15'))          # murojaatni ko'rib chiqish muddati (kun)
 REMIND_EVERY_DAYS=int(os.getenv('REMIND_EVERY_DAYS','3'))   # muddat o'tgach, necha kunda bir eslatish
 DAILY_LIMIT=int(os.getenv('DAILY_LIMIT','3')); WEBAPP_URL=os.getenv('WEBAPP_URL','')
+extra_admins=set()   # admin paneldan qo'shilgan adminlar (bazadagi "admins" jadvali)
+def env_admin_ids(): return {int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().isdigit()}
+def all_admin_ids(): return env_admin_ids()|extra_admins
 CATEGORIES={
  'uchastkavoy':('👮 Profilaktika inspektori',int(os.getenv('ID_UCHASTKAVOY','0'))),
  'rais':('🏠 Mahalla raisi',int(os.getenv('ID_RAIS','0'))),
@@ -57,7 +60,7 @@ async def send_reminders():
     rows=await pool.fetch("SELECT id,category,text,COALESCE(reopened_at,created_at) AS created_at,remind_count FROM arizalar WHERE status<>'done' AND COALESCE(reopened_at,created_at)<=NOW()-make_interval(days=>$1::int) AND (reminded_at IS NULL OR reminded_at<=NOW()-make_interval(days=>$2::int)) ORDER BY id LIMIT 50",DEADLINE_DAYS,REMIND_EVERY_DAYS)
     if not rows: return
     group=await routing_id('group_id',GROUP_ID)
-    admin_ids=sorted({int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().isdigit()})
+    admin_ids=sorted(all_admin_ids())
     for r in rows:
         title=CATEGORIES.get(r['category'],(r['category'],0))[0]
         days=(datetime.now(timezone.utc)-r['created_at']).days
@@ -103,6 +106,8 @@ async def lifespan(app):
   await c.execute("DROP TRIGGER IF EXISTS trg_done_at ON arizalar")
   await c.execute("CREATE TRIGGER trg_done_at BEFORE UPDATE OF status ON arizalar FOR EACH ROW EXECUTE FUNCTION set_done_at()")
   await c.execute("UPDATE arizalar SET rating_asked=TRUE WHERE status='done' AND done_at IS NULL")
+  await c.execute('''CREATE TABLE IF NOT EXISTS admins(user_id BIGINT PRIMARY KEY,name TEXT NOT NULL DEFAULT '',added_by BIGINT,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
+ await load_admins()
  bot=Bot(BOT_TOKEN,default=DefaultBotProperties(parse_mode=ParseMode.HTML))
  try:
   await send_database_backup('deploy')
@@ -120,7 +125,7 @@ async def send_database_backup(reason='manual'):
     if not bot: raise RuntimeError('Telegram bot hali ishga tushmagan')
     admin_ids=sorted({int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().lstrip('-').isdigit()})
     if not admin_ids: raise RuntimeError('ADMIN_IDS sozlanmagan: backup yuborish uchun admin Telegram ID kerak')
-    tables=('arizalar','app_settings','staff_profiles','content_posts','application_comments')
+    tables=('arizalar','app_settings','staff_profiles','content_posts','application_comments','admins')
     snapshot={'format':'mahalla-murojaat-db-backup-v1','created_at':datetime.now(TZ).isoformat(),'reason':reason,'tables':{}}
     for table in tables:
         exists=await pool.fetchval('SELECT to_regclass($1)','public.'+table)
@@ -216,7 +221,7 @@ async def submit(payload:Application,request:Request):
 # ---------------------------------------------------------------- Admin API (Telegram Mini App)
 def admin_user(request: Request):
     user=verify_init_data(request.headers.get('X-Telegram-Init-Data',''))
-    ids={int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().isdigit()}
+    ids=all_admin_ids()
     if int(user.get('id',0)) not in ids: raise HTTPException(403,'Admin huquqi mavjud emas.')
     return user
 class AdminSettings(BaseModel):
@@ -271,7 +276,7 @@ async def admin_restore(payload:AdminRestore,request:Request):
             raise ValueError('Backup formati mos emas.')
     except Exception as e:
         raise HTTPException(400,'Backup faylini o‘qib bo‘lmadi: '+str(e))
-    allowed={'arizalar','app_settings','staff_profiles','content_posts','application_comments'}
+    allowed={'arizalar','app_settings','staff_profiles','content_posts','application_comments','admins'}
     restored={}
     try:
         async with pool.acquire() as conn:
@@ -309,11 +314,12 @@ async def admin_restore(payload:AdminRestore,request:Request):
     except Exception as e:
         logging.exception('Backupni tiklashda xato')
         raise HTTPException(500,'Tiklash bekor qilindi; mavjud ma’lumotlar o‘zgartirilmadi: '+str(e))
+    await load_admins()
     return {'ok':True,'restored':restored,'mode':'merge_without_overwrite'}
 
 @app.get('/api/admin/overview')
 async def admin_overview(request:Request):
-    admin_user(request)
+    user=admin_user(request)
     stats=await pool.fetch('SELECT status,COUNT(*) AS n FROM arizalar GROUP BY status')
     apps=await pool.fetch('SELECT id,full_name,category,text,phone,address,status,created_at,COALESCE(reopened_at,created_at) AS due_base,rating,(photo IS NOT NULL) AS has_photo FROM arizalar ORDER BY id DESC LIMIT 100')
     posts=await pool.fetch('SELECT id,kind,title,body,active,(image IS NOT NULL) AS has_image,created_at FROM content_posts ORDER BY id DESC LIMIT 100')
@@ -325,7 +331,7 @@ async def admin_overview(request:Request):
       'applications':[{'id':r['id'],'name':r['full_name'] or 'Fuqaro','category':CATEGORIES.get(r['category'],(r['category'],0))[0],'text':r['text'],'phone':r['phone'],'address':r['address'],'status':r['status'],'has_photo':bool(r['has_photo']),'rating':r['rating'],'overdue':(r['status']!='done' and r['due_base']<datetime.now(timezone.utc)-timedelta(days=DEADLINE_DAYS)),'date':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y %H:%M')} for r in apps],
       'posts':[{'id':r['id'],'kind':r['kind'],'title':r['title'],'body':r['body'],'active':r['active'],'date':r['created_at'].astimezone(TZ).strftime('%d.%m.%Y')} for r in posts],
       'staff':staff,'settings':{k:await setting(k,'') for k in ('mfy_name','mfy_address','mfy_phone')},
-      'reception':await get_reception(),'leaderboard':await build_leaderboard(),
+      'reception':await get_reception(),'leaderboard':await build_leaderboard(),'me':{'id':int(user['id']),'super':int(user['id']) in env_admin_ids()},'admins':await list_admins(),
       'routing':{'group_id':await setting('group_id',str(GROUP_ID)),'staff_ids':{k:await setting('staff_'+k,str(v[1])) for k,v in CATEGORIES.items()}}}
 @app.put('/api/admin/settings')
 async def admin_settings(p:AdminSettings,request:Request):
@@ -444,7 +450,7 @@ async def admin_apps_delete(payload:AdminDeleteApps,request:Request):
 
 # ---------------------------------------------------------------- Baholash, reyting, rasm
 def admin_ids_set():
-    return {int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip().isdigit()}
+    return all_admin_ids()
 async def build_leaderboard():
     rows=await pool.fetch("""SELECT category,COUNT(*) AS total,
         COUNT(*) FILTER (WHERE status='done') AS done,
@@ -503,3 +509,46 @@ async def admin_app_photo(aid:int,request:Request):
     if not row or not row['photo']: raise HTTPException(404,'Rasm topilmadi')
     data=bytes(row['photo'])
     return Response(data,media_type=image_media_type(data),headers={'Cache-Control':'no-store'})
+
+
+# ---------------------------------------------------------------- Adminlarni boshqarish
+async def load_admins():
+    extra_admins.clear()
+    try:
+        for r in await pool.fetch('SELECT user_id FROM admins'): extra_admins.add(int(r['user_id']))
+    except Exception: logging.exception('Adminlar ro‘yxati yuklanmadi')
+async def list_admins():
+    env=env_admin_ids()
+    rows=await pool.fetch('SELECT user_id,name FROM admins ORDER BY created_at')
+    out=[{'id':i,'name':'Asosiy admin','super':True} for i in sorted(env)]
+    out+=[{'id':int(r['user_id']),'name':r['name'] or '','super':False} for r in rows if int(r['user_id']) not in env]
+    return out
+def super_admin(request:Request):
+    user=admin_user(request)
+    if int(user['id']) not in env_admin_ids(): raise HTTPException(403,'Adminlarni faqat asosiy adminlar boshqara oladi.')
+    return user
+class AdminAdd(BaseModel):
+    user_id:str=Field(min_length=3,max_length=20)
+    name:str=Field(default='',max_length=80)
+@app.post('/api/admin/admins')
+async def admin_add(p:AdminAdd,request:Request):
+    me=super_admin(request); raw=p.user_id.strip()
+    if not raw.isdigit(): raise HTTPException(400,'Telegram ID faqat raqamlardan iborat bo‘lishi kerak.')
+    uid=int(raw)
+    if uid in env_admin_ids(): raise HTTPException(400,'Bu foydalanuvchi allaqachon asosiy admin.')
+    name=p.name.strip()
+    if not name:
+        try:
+            ch=await bot.get_chat(uid); name=ch.full_name or ch.username or ''
+        except Exception: name=''
+    await pool.execute('INSERT INTO admins(user_id,name,added_by) VALUES($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET name=EXCLUDED.name',uid,name,int(me['id']))
+    extra_admins.add(uid)
+    try: await bot.send_message(uid,'👮 Siz mahalla ilovasida <b>admin</b> etib tayinlandingiz. Ilovani qayta oching.')
+    except Exception: logging.info('Yangi adminga xabar yuborilmadi (u botga /start bosmagan bo‘lishi mumkin)')
+    return {'ok':True}
+@app.delete('/api/admin/admins/{uid}')
+async def admin_remove(uid:int,request:Request):
+    super_admin(request)
+    if uid in env_admin_ids(): raise HTTPException(400,'Asosiy adminni bu yerdan olib tashlab bo‘lmaydi.')
+    await pool.execute('DELETE FROM admins WHERE user_id=$1',uid); extra_admins.discard(uid)
+    return {'ok':True}
